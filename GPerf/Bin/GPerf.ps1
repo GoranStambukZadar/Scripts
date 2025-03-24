@@ -11,9 +11,9 @@ function Set-RegKey {
     )
     if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
     if ($type -eq "DWord") {
-        Set-ItemProperty -Path $path -Name $name -Value $value -Type DWord -Force
+        Set-ItemProperty -Path $path -Name $name -Value $value -Type DWord -Force -ErrorAction SilentlyContinue
     } else {
-        Set-ItemProperty -Path $path -Name $name -Value $value -Type String -Force
+        Set-ItemProperty -Path $path -Name $name -Value $value -Type String -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -25,20 +25,17 @@ bcdedit /set quietboot yes | Out-Null
 powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100 | Out-Null
 powercfg -setactive scheme_current | Out-Null
 Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" -name "DistributeTimers" -value 1
-Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -name "Win32PrioritySeparation" -value 26  # Short, variable quanta for gaming
+Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -name "Win32PrioritySeparation" -value 26
 
 # --- Memory Management ---
 Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -name "DisablePagingExecutive" -value 1
-Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -name "IoPageLockLimit" -value 0x400000  # 4MB
+Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" -name "IoPageLockLimit" -value 0x400000
 
 # --- Network Optimizations ---
-# TCP Settings
 netsh.exe interface tcp set supplemental Internet congestionprovider=ctcp | Out-Null
 netsh.exe interface tcp set global fastopen=enabled | Out-Null
 netsh.exe interface tcp set global rss=enabled | Out-Null
 Set-NetTCPSetting -SettingName * -InitialCongestionWindow 10 -MaxSynRetransmissions 2 -ErrorAction SilentlyContinue
-
-# Adapter Tweaks
 Disable-NetAdapterPowerManagement -Name * -ErrorAction SilentlyContinue
 Disable-NetAdapterLso -Name * -ErrorAction SilentlyContinue
 Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -name "Tcp1323Opts" -value 1
@@ -54,11 +51,11 @@ foreach ($tcpInterface in $tcpInterfaces) {
 }
 
 # AFD Buffer Sizes
-Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters" -name "DefaultReceiveWindow" -value 33178  # 0x8192
+Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters" -name "DefaultReceiveWindow" -value 33178
 Set-RegKey -path "HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters" -name "DefaultSendWindow" -value 33178
 
 # --- Power Plan ---
-powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  # High Performance Plan
+powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
 
 # --- Explorer Enhancements ---
 Set-RegKey -path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -name "FolderContentsInfoTip" -value 1
@@ -75,7 +72,7 @@ Set-RegKey -path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\
 Set-RegKey -path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -name "VisualFXSetting" -value 3
 
 # --- Service Optimizations ---
-$services = @("Spooler", "WSearch")  # Disable Print Spooler and Windows Search if not needed
+$services = @("Spooler", "WSearch")
 foreach ($service in $services) {
     if ((Get-Service -Name $service -ErrorAction SilentlyContinue).StartType -ne "Disabled") {
         Set-Service -Name $service -StartupType Disabled -ErrorAction SilentlyContinue
@@ -83,7 +80,14 @@ foreach ($service in $services) {
     }
 }
 
-# --- Enable DirectPlay (Legacy Gaming) ---
+# --- Add SvcHostSplitDisable to all services ---
+$servicesPath = "HKLM:\SYSTEM\CurrentControlSet\Services"
+$allServices = Get-ChildItem -Path $servicesPath -ErrorAction SilentlyContinue
+foreach ($service in $allServices) {
+    Set-RegKey -path $service.PSPath -name "SvcHostSplitDisable" -value 1
+}
+
+# --- Enable DirectPlay ---
 Enable-WindowsOptionalFeature -Online -FeatureName "DirectPlay" -NoRestart -ErrorAction SilentlyContinue
 
 # --- Remove Bloat Features ---

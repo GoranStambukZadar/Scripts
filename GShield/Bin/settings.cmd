@@ -106,16 +106,6 @@ SetACL.exe -on "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\gpsvc" -ot 
 sc stop gpsvc
 
 :: Services stop and disable
-sc SSDPSRV start= disabled
-sc upnphost start= disabled
-sc NetBT start= disabled
-sc BTHMODEM start= disabled
-sc gpsvc start= disabled
-sc LanmanWorkstation start= disabled
-sc LanmanServer start= disabled
-sc seclogon start= disabled
-sc Messenger start= disabled
-
 sc stop SSDPSRV
 sc stop upnphost
 sc stop NetBT
@@ -125,6 +115,16 @@ sc stop LanmanWorkstation
 sc stop LanmanServer
 sc stop seclogon
 sc stop Messenger
+
+sc SSDPSRV start= disabled
+sc upnphost start= disabled
+sc NetBT start= disabled
+sc BTHMODEM start= disabled
+sc gpsvc start= disabled
+sc LanmanWorkstation start= disabled
+sc LanmanServer start= disabled
+sc seclogon start= disabled
+sc Messenger start= disabled
 
 :: Perms
 for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
@@ -179,4 +179,3 @@ takeown /f "%USERPROFILE%\Desktop" /r /d y
 icacls "%USERPROFILE%\Desktop" /inheritance:d /T /C
 icacls "%USERPROFILE%\Desktop" /remove "System"
 icacls "%USERPROFILE%\Desktop" /remove "Administrators"
-
