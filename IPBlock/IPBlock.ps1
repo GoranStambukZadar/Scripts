@@ -10,7 +10,7 @@ function Ensure-Elevation {
     if (-not (Test-IsAdmin)) {
         Write-Log "Restarting script as Administrator."
         $newProcess = New-Object System.Diagnostics.ProcessStartInfo "powershell"
-        $newProcess.Arguments = "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" 
+        $newProcess.Arguments = "-ExecutionPolicy Bypass -File `"$PSCommandPath`" -DryRun:$DryRun"
         $newProcess.Verb = "runas"
         $newProcess.WindowStyle = "Hidden"
         [System.Diagnostics.Process]::Start($newProcess)
@@ -18,72 +18,134 @@ function Ensure-Elevation {
     }
 }
 
-# Get the current user's Documents folder
-$documentsFolder = [Environment]::GetFolderPath("MyDocuments")
-$blockListDir = Join-Path $documentsFolder "PeerBlockLists"
+# Function to log messages with timestamps and severity
+function Write-Log {
+    param (
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [$Level] $Message"
+    Add-Content -Path $logFile -Value $logEntry
+    Write-Host $logEntry -ForegroundColor $(switch ($Level) { "ERROR" { "Red" } "WARN" { "Yellow" } default { "Green" } })
+}
 
-# Define the URLs of alternative blocklists
-$blockListURLs = @(
-    "https://www.spamhaus.org/drop/drop.lasso",                # Spamhaus DROP list
-    "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt",  # Emerging Threats block list
-    "https://zeustracker.abuse.ch/blocklist.php?download=ipblocklist",     # Zeus Tracker IP blocklist
-    "https://blocklist.de/downloads/blocklist_de.txt"          # blocklist.de
+# Function to validate IP addresses or ranges
+function Test-ValidIP {
+    param (
+        [string]$ip
+    )
+    try {
+        if ($ip -match "^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$") {  # Single IP or CIDR
+            return $true
+        }
+        elseif ($ip -match "^(\d{1,3}(\.\d{1,3}){3})-(\d{1,3}(\.\d{1,3}){3})$") {  # IP range
+            return $true
+        }
+        return $false
+    } catch {
+        return $false
+    }
+}
+
+# Command-line parameters
+param (
+    [switch]$DryRun
 )
 
-# Create the directory to store downloaded and extracted blocklists
-New-Item -ItemType Directory -Force -Path $blockListDir
+# Ensure script runs as Administrator
+Ensure-Elevation
 
-# Function to download blocklists
+# Get the current user's Documents folder and set paths
+$documentsFolder = [Environment]::GetFolderPath("MyDocuments")
+$blockListDir = Join-Path $documentsFolder "PeerBlockLists"
+$logFile = Join-Path $documentsFolder "block_log.txt"
+
+# Define the URLs of malware-focused blocklists
+$blockListURLs = @(
+    "https://www.spamhaus.org/drop/drop.lasso",                # Spamhaus DROP (malware, botnets)
+    "https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt",  # Emerging Threats (malware)
+    "https://zeustracker.abuse.ch/blocklist.php?download=ipblocklist",   # Zeus Tracker (malware C&C)
+    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt",           # Feodo Tracker (malware C&C)
+    "http://cinsscore.com/list/ci-badguys.txt",                          # CINS Army (malware IPs)
+    "https://www.talosintelligence.com/documents/ip-blacklist",          # Talos Intelligence (malware)
+    "https://iplists.firehol.org/files/firehol_level3.netset"            # FireHOL Level 3 (malware, botnets)
+)
+
+# Whitelist for exceptions (customize as needed)
+$whitelist = @("192.168.1.1", "10.0.0.0/24")
+
+# Create the directory to store downloaded blocklists
+New-Item -ItemType Directory -Force -Path $blockListDir | Out-Null
+
+# Function to download blocklists with retries
 function Download-BlockList {
     param (
-        [string]$url
+        [string]$url,
+        [int]$maxRetries = 3
     )
 
     $fileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName()) + ".txt"
     $outputFile = Join-Path $blockListDir $fileName
+    $attempt = 0
 
-    try {
-        # Download the blocklist
-        Invoke-WebRequest -Uri $url -OutFile $outputFile -ErrorAction Stop
-        Write-Host "Downloaded: $url" -ForegroundColor Green
-        return $outputFile
-    } catch {
-        Write-Host "Failed to download: $url" -ForegroundColor Red
-        return $null
+    while ($attempt -lt $maxRetries) {
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $outputFile -ErrorAction Stop
+            Write-Log "Downloaded blocklist: $url"
+            return $outputFile
+        } catch {
+            $attempt++
+            Write-Log "Attempt $attempt failed for $url: $_" -Level "WARN"
+            if ($attempt -eq $maxRetries) {
+                Write-Log "Max retries reached for $url" -Level "ERROR"
+                return $null
+            }
+            Start-Sleep -Seconds 5
+        }
     }
 }
 
-# Function to parse and filter the IPs from the blocklist
+# Function to parse and filter IPs from blocklists
 function Parse-BlockList {
     param (
         [string]$filePath
     )
 
     $outputList = @()
-    # Read the content and filter IP addresses (assuming the blocklists contain plain IP addresses)
-    $outputList += Get-Content -Path $filePath | Where-Object { $_ -match "^\d{1,3}(\.\d{1,3}){3}" }
+    $content = Get-Content -Path $filePath -ErrorAction SilentlyContinue
+    foreach ($line in $content) {
+        $line = $line.Trim()
+        if ($line -eq "" -or $line.StartsWith("#") -or $line.StartsWith(";")) {
+            continue
+        }
+        if (Test-ValidIP $line) {
+            $outputList += $line
+        }
+    }
     return $outputList
 }
 
-# Function to add IP addresses or ranges to Windows Firewall for both inbound and outbound blocking
+# Function to add IP addresses or ranges to Windows Firewall
 function Add-IPBlock {
     param (
         [string]$ipRange
     )
 
-    $inboundRuleName = "Block IP Range (Inbound) - $ipRange"
-    $outboundRuleName = "Block IP Range (Outbound) - $ipRange"
+    $inboundRuleName = "Block Malware IP (Inbound) - $ipRange"
+    $outboundRuleName = "Block Malware IP (Outbound) - $ipRange"
 
-    # Block inbound traffic
-    New-NetFirewallRule -DisplayName $inboundRuleName -Direction Inbound -Action Block -RemoteAddress $ipRange -Profile Any -Verbose
-    
-    # Block outbound traffic
-    New-NetFirewallRule -DisplayName $outboundRuleName -Direction Outbound -Action Block -RemoteAddress $ipRange -Profile Any -Verbose
+    if (-not $DryRun) {
+        # Block inbound traffic
+        New-NetFirewallRule -DisplayName $inboundRuleName -Direction Inbound -Action Block -RemoteAddress $ipRange -Profile Any -Verbose -ErrorAction SilentlyContinue
+        # Block outbound traffic
+        New-NetFirewallRule -DisplayName $outboundRuleName -Direction Outbound -Action Block -RemoteAddress $ipRange -Profile Any -Verbose -ErrorAction SilentlyContinue
+    }
+    Write-Log "Blocked IP/Range: $ipRange (DryRun: $DryRun)"
 }
 
 # Download and process each blocklist
 $allBlockListIPs = @()
-
 foreach ($url in $blockListURLs) {
     $downloadedFile = Download-BlockList -url $url
     if ($downloadedFile) {
@@ -97,20 +159,19 @@ $uniqueIPs = $allBlockListIPs | Sort-Object -Unique
 
 foreach ($ip in $uniqueIPs) {
     try {
-        if ($ip.Trim() -eq "" -or $ip.Trim().StartsWith("#")) {
+        if (-not (Test-ValidIP $ip)) {
+            Write-Log "Invalid IP/Range skipped: $ip" -Level "WARN"
             continue
         }
-
+        if ($whitelist -contains $ip -or ($whitelist | Where-Object { $ip -like $_ })) {
+            Write-Log "Whitelisted IP/Range skipped: $ip" -Level "INFO"
+            continue
+        }
         Add-IPBlock -ipRange $ip
-        Write-Host "Blocked IP/Range: $ip" -ForegroundColor Green
     } catch {
-        Write-Host "Failed to block IP/Range: $ip" -ForegroundColor Red
+        Write-Log "Failed to block IP/Range: $ip - $_" -Level "ERROR"
     }
 }
 
-Write-Host "IP blocking complete." -ForegroundColor Cyan
-
-# Optional: Logging
-$logFile = Join-Path $documentsFolder "block_log.txt"
-$uniqueIPs | Out-File -FilePath $logFile -Append
+Write-Log "IP blocking process complete (DryRun: $DryRun)" -Level "INFO"
 Write-Host "Block list logged to $logFile" -ForegroundColor Yellow
