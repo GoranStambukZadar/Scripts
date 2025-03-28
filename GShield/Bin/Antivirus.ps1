@@ -158,5 +158,5 @@ catch {
     Write-Log "Error details: $($_.ScriptStackTrace)"
 }
 finally {
-Start-Sleep -Seconds 60
+Start-Sleep -Seconds 1
 }
