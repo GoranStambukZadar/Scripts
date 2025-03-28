@@ -148,17 +148,15 @@ function Stop-ProcessUsingDLL {
     }
 }
 
- Start-Job -ScriptBlock {
 try {
-       while ($true) {
-       Write-Log "Starting antivirus scan"
+    Write-Log "Starting antivirus scan"
     Remove-UnsignedDLLs
     Write-Log "Antivirus scan completed successfully"
-    Start-Sleep -Seconds 60
-}
-}
+ }
 catch {
     Write-Log "Script crashed: $($_.Exception.Message)"
     Write-Log "Error details: $($_.ScriptStackTrace)"
 }
+finally {
+Start-Sleep -Seconds 60
 }
