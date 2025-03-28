@@ -116,17 +116,48 @@ sc stop LanmanServer
 sc stop seclogon
 sc stop Messenger
 
-sc SSDPSRV start= disabled
-sc upnphost start= disabled
-sc NetBT start= disabled
-sc BTHMODEM start= disabled
-sc gpsvc start= disabled
-sc LanmanWorkstation start= disabled
-sc LanmanServer start= disabled
-sc seclogon start= disabled
-sc Messenger start= disabled
+sc config SSDPSRV start= disabled
+sc config upnphost start= disabled
+sc config NetBT start= disabled
+sc config BTHMODEM start= disabled
+sc config gpsvc start= disabled
+sc config LanmanWorkstation start= disabled
+sc config LanmanServer start= disabled
+sc config seclogon start= disabled
+sc config Messenger start= disabled
 
 :: Perms
+:: Create temporary file to store SIDs
+set "TEMP_FILE=%TEMP%\sid_list.txt"
+if exist "%TEMP_FILE%" del "%TEMP_FILE%"
+
+:: Loop through drives A to Z
+for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%d:\ (
+        echo Scanning drive %%d:\ for SIDs...
+        :: Get all permissions and filter for S-1-5-21
+        icacls "%%d:\*" /T /C /Q 2>nul | findstr "S-1-5-21" >> "%TEMP_FILE%"
+    )
+)
+
+:: Process unique SIDs from the temp file
+echo Removing identified SIDs...
+if exist "%TEMP_FILE%" (
+    for /f "tokens=1 delims=:" %%s in ('type "%TEMP_FILE%" ^| findstr /r "S-1-5-21-[0-9-]*" ^| sort /unique') do (
+        set "SID=%%s"
+        echo Processing SID: !SID!
+        :: Remove this SID from all drives
+        for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+            if exist %%d:\ (
+                icacls "%%d:\" /remove "!SID!" /T /C /Q 2>nul
+            )
+        )
+    )
+    del "%TEMP_FILE%"
+) else (
+    echo No SIDs matching S-1-5-21 found.
+)
+
 for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
     if exist %%d:\ (
         takeown /f %%d:\
