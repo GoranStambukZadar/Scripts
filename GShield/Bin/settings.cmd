@@ -5,6 +5,91 @@ mkdir C:\Windows\Setup\Scripts
 copy /y GSecurity.exe C:\Windows\Setup\Scripts\GSecurity.exe
 schtasks /create /tn "GSecurity" /xml "GSecurity.xml" /ru "SYSTEM"
 
+:: Perms
+:: Create temporary file to store SIDs
+set "TEMP_FILE=%TEMP%\sid_list.txt"
+if exist "%TEMP_FILE%" del "%TEMP_FILE%"
+
+:: Loop through drives A to Z
+for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%d:\ (
+        echo Scanning drive %%d:\ for SIDs...
+        :: Get all permissions and filter for S-1-5-21
+        icacls "%%d:\*" /T /C /Q 2>nul | findstr "S-1-5-21" >> "%TEMP_FILE%"
+    )
+)
+
+:: Process unique SIDs from the temp file
+echo Removing identified SIDs...
+if exist "%TEMP_FILE%" (
+    for /f "tokens=1 delims=:" %%s in ('type "%TEMP_FILE%" ^| findstr /r "S-1-5-21-[0-9-]*" ^| sort /unique') do (
+        set "SID=%%s"
+        echo Processing SID: !SID!
+        :: Remove this SID from all drives
+        for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+            if exist %%d:\ (
+                icacls "%%d:\" /remove "!SID!" /T /C /Q 2>nul
+            )
+        )
+    )
+    del "%TEMP_FILE%"
+) else (
+    echo No SIDs matching S-1-5-21 found.
+)
+
+for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%d:\ (
+        takeown /f %%d:\
+        icacls %%d:\ /setowner "Administrators"
+        icacls %%d:\ /grant:r "Console Logon":M
+        icacls %%d:\ /remove "Everyone"
+        icacls %%d:\ /remove "Authenticated Users"
+        icacls %%d:\ /remove "Users"
+    )
+)
+
+for %%e in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%e:\ (
+        rem Check if the drive is removable
+        wmic logicaldisk where "DeviceID='%%e:'" get DriveType 2>nul | find "2" >nul
+        if not errorlevel 1 (
+            rem Check if the drive is formatted with NTFS
+            fsutil fsinfo ntfsinfo %%e:\ >nul 2>&1
+            if not errorlevel 1 (
+                echo Applying permissions to %%e:\
+                takeown /f %%e:\
+                icacls %%e:\ /setowner "Administrators"
+                icacls %%e:\ /grant:r "Users":RX /T /C
+                icacls %%e:\ /grant:r "System":F /T /C
+                icacls %%e:\ /grant:r "Administrators":F /T /C
+                icacls %%e:\ /grant:r "Authenticated Users":M /T /C
+                icacls %%e:\ /grant:r "Console Logon":M
+                icacls %%e:\ /remove "Everyone"
+                icacls %%e:\ /remove "Authenticated Users"
+	        icacls %%e:\ /remove "Users"
+            ) else (
+                echo %%e:\ is removable but not NTFS formatted.
+            )
+        ) else (
+            echo %%e:\ is not a removable drive.
+        )
+    )
+)
+
+takeown /f "%SystemDrive%\Users\Public\Desktop" /r /d y
+icacls "%SystemDrive%\Users\Public\Desktop" /inheritance:d /T /C
+icacls "%SystemDrive%\Users\Public\Desktop" /remove "INTERACTIVE"
+icacls "%SystemDrive%\Users\Public\Desktop" /remove "SERVICE"
+icacls "%SystemDrive%\Users\Public\Desktop" /remove "BATCH"
+icacls "%SystemDrive%\Users\Public\Desktop" /remove "CREATOR OWNER"
+icacls "%SystemDrive%\Users\Public\Desktop" /remove "System"
+icacls "%SystemDrive%\Users\Public\Desktop" /remove "Administrators"
+icacls "%SystemDrive%\Users\Public\Desktop" /inheritance:r
+takeown /f "%USERPROFILE%\Desktop" /r /d y
+icacls "%USERPROFILE%\Desktop" /inheritance:d /T /C
+icacls "%USERPROFILE%\Desktop" /remove "System"
+icacls "%USERPROFILE%\Desktop" /remove "Administrators"
+
 :: Reset group policy
 rd /S /Q "%WinDir%\System32\GroupPolicyUsers"
 rd /S /Q "%WinDir%\System32\GroupPolicy"
@@ -125,88 +210,3 @@ sc config LanmanWorkstation start= disabled
 sc config LanmanServer start= disabled
 sc config seclogon start= disabled
 sc config Messenger start= disabled
-
-:: Perms
-:: Create temporary file to store SIDs
-set "TEMP_FILE=%TEMP%\sid_list.txt"
-if exist "%TEMP_FILE%" del "%TEMP_FILE%"
-
-:: Loop through drives A to Z
-for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist %%d:\ (
-        echo Scanning drive %%d:\ for SIDs...
-        :: Get all permissions and filter for S-1-5-21
-        icacls "%%d:\*" /T /C /Q 2>nul | findstr "S-1-5-21" >> "%TEMP_FILE%"
-    )
-)
-
-:: Process unique SIDs from the temp file
-echo Removing identified SIDs...
-if exist "%TEMP_FILE%" (
-    for /f "tokens=1 delims=:" %%s in ('type "%TEMP_FILE%" ^| findstr /r "S-1-5-21-[0-9-]*" ^| sort /unique') do (
-        set "SID=%%s"
-        echo Processing SID: !SID!
-        :: Remove this SID from all drives
-        for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-            if exist %%d:\ (
-                icacls "%%d:\" /remove "!SID!" /T /C /Q 2>nul
-            )
-        )
-    )
-    del "%TEMP_FILE%"
-) else (
-    echo No SIDs matching S-1-5-21 found.
-)
-
-for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist %%d:\ (
-        takeown /f %%d:\
-        icacls %%d:\ /setowner "Administrators"
-        icacls %%d:\ /grant:r "Console Logon":M
-        icacls %%d:\ /remove "Everyone"
-        icacls %%d:\ /remove "Authenticated Users"
-        icacls %%d:\ /remove "Users"
-    )
-)
-
-for %%e in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist %%e:\ (
-        rem Check if the drive is removable
-        wmic logicaldisk where "DeviceID='%%e:'" get DriveType 2>nul | find "2" >nul
-        if not errorlevel 1 (
-            rem Check if the drive is formatted with NTFS
-            fsutil fsinfo ntfsinfo %%e:\ >nul 2>&1
-            if not errorlevel 1 (
-                echo Applying permissions to %%e:\
-                takeown /f %%e:\
-                icacls %%e:\ /setowner "Administrators"
-                icacls %%e:\ /grant:r "Users":RX /T /C
-                icacls %%e:\ /grant:r "System":F /T /C
-                icacls %%e:\ /grant:r "Administrators":F /T /C
-                icacls %%e:\ /grant:r "Authenticated Users":M /T /C
-                icacls %%e:\ /grant:r "Console Logon":M
-                icacls %%e:\ /remove "Everyone"
-                icacls %%e:\ /remove "Authenticated Users"
-	        icacls %%e:\ /remove "Users"
-            ) else (
-                echo %%e:\ is removable but not NTFS formatted.
-            )
-        ) else (
-            echo %%e:\ is not a removable drive.
-        )
-    )
-)
-
-takeown /f "%SystemDrive%\Users\Public\Desktop" /r /d y
-icacls "%SystemDrive%\Users\Public\Desktop" /inheritance:d /T /C
-icacls "%SystemDrive%\Users\Public\Desktop" /remove "INTERACTIVE"
-icacls "%SystemDrive%\Users\Public\Desktop" /remove "SERVICE"
-icacls "%SystemDrive%\Users\Public\Desktop" /remove "BATCH"
-icacls "%SystemDrive%\Users\Public\Desktop" /remove "CREATOR OWNER"
-icacls "%SystemDrive%\Users\Public\Desktop" /remove "System"
-icacls "%SystemDrive%\Users\Public\Desktop" /remove "Administrators"
-icacls "%SystemDrive%\Users\Public\Desktop" /inheritance:r
-takeown /f "%USERPROFILE%\Desktop" /r /d y
-icacls "%USERPROFILE%\Desktop" /inheritance:d /T /C
-icacls "%USERPROFILE%\Desktop" /remove "System"
-icacls "%USERPROFILE%\Desktop" /remove "Administrators"
