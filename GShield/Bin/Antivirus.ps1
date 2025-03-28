@@ -12,7 +12,6 @@ $scriptPath = "$scriptDir\Antivirus.ps1"
 $quarantineFolder = "C:\Quarantine"
 $logFile = "$quarantineFolder\antivirus_log.txt"
 $localDatabase = "$quarantineFolder\scanned_files.txt"
-$virusTotalApiKey = "24ebf7780f869017f4bf596d11d6d38dc6dd37ec5a52494b3f0c65f3bdd2c929"
 $scannedFiles = @{}
 
 # Ensure script directory exists and copy script
