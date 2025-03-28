@@ -42,37 +42,13 @@ for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
         takeown /f %%d:\
         icacls %%d:\ /setowner "Administrators"
         icacls %%d:\ /grant:r "Console Logon":M /T /C
+        icacls %%e:\ /grant:r "Users":RX /T /C
+        icacls %%e:\ /grant:r "System":F /T /C
+        icacls %%e:\ /grant:r "Administrators":F /T /C
+        icacls %%e:\ /grant:r "Authenticated Users":M /T /C
         icacls %%d:\ /remove "Everyone"
         icacls %%d:\ /remove "Authenticated Users"
         icacls %%d:\ /remove "Users"
-    )
-)
-
-for %%e in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist %%e:\ (
-        rem Check if the drive is removable
-        wmic logicaldisk where "DeviceID='%%e:'" get DriveType 2>nul | find "2" >nul
-        if not errorlevel 1 (
-            rem Check if the drive is formatted with NTFS
-            fsutil fsinfo ntfsinfo %%e:\ >nul 2>&1
-            if not errorlevel 1 (
-                echo Applying permissions to %%e:\
-                takeown /f %%e:\
-                icacls %%e:\ /setowner "Administrators"
-                icacls %%e:\ /grant:r "Users":RX /T /C
-                icacls %%e:\ /grant:r "System":F /T /C
-                icacls %%e:\ /grant:r "Administrators":F /T /C
-                icacls %%e:\ /grant:r "Authenticated Users":M /T /C
-                icacls %%e:\ /grant:r "Console Logon":M /T /C
-                icacls %%e:\ /remove "Everyone"
-                icacls %%e:\ /remove "Authenticated Users"
-	        icacls %%e:\ /remove "Users"
-            ) else (
-                echo %%e:\ is removable but not NTFS formatted.
-            )
-        ) else (
-            echo %%e:\ is not a removable drive.
-        )
     )
 )
 
