@@ -1,36 +1,50 @@
 @echo off
 
 :: Perms
-:: Create temporary file to store SIDs
+:: Create temporary files
 set "TEMP_FILE=%TEMP%\sid_list.txt"
+set "ITEMS_FILE=%TEMP%\items_list.txt"
 if exist "%TEMP_FILE%" del "%TEMP_FILE%"
+if exist "%ITEMS_FILE%" del "%ITEMS_FILE%"
 
-:: Loop through drives A to Z
+:: Loop through drives A to Z to find items with SIDs
 for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
     if exist %%d:\ (
         echo Scanning drive %%d:\ for SIDs...
-        :: Get all permissions and filter for S-1-5-21
-        icacls "%%d:\*" /T /C /Q 2>nul | findstr "S-1-5-21" >> "%TEMP_FILE%"
+        :: Get all permissions with full paths and filter for S-1-5-21
+        dir "%%d:\" /s /b 2>nul | for /f "tokens=*" %%f in ('more') do (
+            icacls "%%f" /C /Q 2>nul | findstr "S-1-5-21" >nul && echo %%f>>"%ITEMS_FILE%"
+            icacls "%%f" /C /Q 2>nul | findstr "S-1-5-21" >>"%TEMP_FILE%"
+        )
     )
 )
 
 :: Process unique SIDs from the temp file
-echo Removing identified SIDs...
-if exist "%TEMP_FILE%" (
+echo Processing identified SIDs...
+if exist "%TEMP_FILE%" if exist "%ITEMS_FILE%" (
     for /f "tokens=1 delims=:" %%s in ('type "%TEMP_FILE%" ^| findstr /r "S-1-5-21-[0-9-]*" ^| sort /unique') do (
         set "SID=%%s"
         echo Processing SID: !SID!
-        :: Remove this SID from all drives
-        for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-            if exist %%d:\ (
-                icacls "%%d:\" /remove "!SID!" /T /C /Q 2>nul
-            )
+        
+        :: Process each item containing this SID
+        for /f "tokens=*" %%i in ('type "%ITEMS_FILE%"') do (
+            echo Taking ownership of "%%i"...
+            takeown /F "%%i" /A /D Y 2>nul
+            
+            echo Removing inheritance from "%%i"...
+            icacls "%%i" /inheritance:d /C /Q 2>nul
+            
+            echo Removing SID !SID! from "%%i"...
+            icacls "%%i" /remove "!SID!" /C /Q 2>nul
         )
     )
     del "%TEMP_FILE%"
+    del "%ITEMS_FILE%"
 ) else (
     echo No SIDs matching S-1-5-21 found.
 )
+
+echo Done.
 
 for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
     if exist %%d:\ (
