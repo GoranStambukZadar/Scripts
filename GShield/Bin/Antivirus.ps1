@@ -1,7 +1,34 @@
 $ErrorActionPreference = 'Stop'
 
-# Define paths
-$scriptDir = "F:\Gorstak\GShield\Bin"
+# Simple Antivirus by Gorstak
+
+# Ensure script directory exists and copy script
+if (-not (Test-Path $scriptDir)) {
+    New-Item -Path $scriptDir -ItemType Directory -Force
+}
+if (-not (Test-Path $scriptPath)) {
+    Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force
+}
+
+# Define scheduled task parameters
+$taskName = "SimpleAntivirusStartup"
+$taskDescription = "Runs the Simple Antivirus script at user logon with admin privileges."
+
+# Check if task exists
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+
+if (-not $existingTask) {
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Highest
+    $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Description $taskDescription
+
+    # Register the task
+    Register-ScheduledTask -TaskName $taskName -InputObject $task
+}
+
+# Define script path
+$scriptDir = "C:\Windows\Setup\Scripts"
 $scriptPath = "$scriptDir\Antivirus.ps1"
 $quarantineFolder = "C:\Quarantine"
 $logFile = "$quarantineFolder\antivirus_log.txt"
@@ -140,7 +167,7 @@ try {
 catch {
     Write-Log "Script encountered an error: $($_.Exception.Message)"
     Write-Log "Error details: $($_.ScriptStackTrace)"
-    $exitCode = 1  # Set failure code but don’t exit yet
+    $exitCode = 1  # Set failure code but donâ€™t exit yet
 }
 finally {
     Start-Sleep -Seconds 1
