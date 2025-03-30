@@ -1,10 +1,4 @@
 $ErrorActionPreference = 'Stop'
-trap {
-    Write-Host -ForegroundColor Red "CRITICAL ERROR: $_"
-    Write-Host "Stack Trace: $($_.ScriptStackTrace)"
-    Pause
-    exit 1
-}
 
 # Define paths
 $scriptDir = "F:\Gorstak\GShield\Bin"
@@ -13,6 +7,25 @@ $quarantineFolder = "C:\Quarantine"
 $logFile = "$quarantineFolder\antivirus_log.txt"
 $localDatabase = "$quarantineFolder\scanned_files.txt"
 $scannedFiles = @{}
+$exitCode = 0  # Default to success
+
+# Logging Function with Rotation
+function Write-Log {
+    param ([string]$message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] $message"
+    Write-Output $logEntry  # Changed to Write-Output for batch compatibility
+    if ((Test-Path $logFile) -and ((Get-Item $logFile -ErrorAction SilentlyContinue).Length -ge 10MB)) {
+        $archiveName = "$quarantineFolder\antivirus_log_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+        Rename-Item -Path $logFile -NewName $archiveName -ErrorAction SilentlyContinue
+        Write-Output "Rotated log to $archiveName"
+    }
+    try {
+        Add-Content -Path $logFile -Value $logEntry -ErrorAction Stop
+    } catch {
+        Write-Output "Failed to write to log: $($_.Exception.Message)"
+    }
+}
 
 # Ensure script directory exists and copy script
 if (-not (Test-Path $scriptDir)) {
@@ -22,28 +35,6 @@ if (-not (Test-Path $scriptDir)) {
 if (-not (Test-Path $scriptPath)) {
     Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force
     Write-Log "Copied script to: $scriptPath"
-}
-
-# Define scheduled task parameters
-$taskName = "SimpleAntivirusStartup"
-$taskDescription = "Runs the Simple Antivirus script at user logon with admin privileges."
-
-# Logging Function with Rotation
-function Write-Log {
-    param ([string]$message)
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logEntry = "[$timestamp] $message"
-    Write-Host $logEntry
-    if ((Test-Path $logFile) -and ((Get-Item $logFile -ErrorAction SilentlyContinue).Length -ge 10MB)) {
-        $archiveName = "$quarantineFolder\antivirus_log_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-        Rename-Item -Path $logFile -NewName $archiveName -ErrorAction SilentlyContinue
-        Write-Log "Rotated log to $archiveName"
-    }
-    try {
-        Add-Content -Path $logFile -Value $logEntry -ErrorAction Stop
-    } catch {
-        Write-Log "Failed to write to log: $($_.Exception.Message)"
-    }
 }
 
 # Create Quarantine Folder and Log
@@ -71,45 +62,38 @@ function Remove-UnsignedDLLs {
         Write-Log "No drives detected for scanning."
         return
     }
-    try {
-        foreach ($drive in $drives) {
-            $root = $drive.DeviceID + "\"
-            Write-Log "Scanning drive: $root"
-            try {
-                $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -ErrorAction SilentlyContinue
-                
-                if ($null -eq $dllFiles -or $dllFiles.Count -eq 0) {
-                    Write-Log "No DLL files found on drive $root"
-                    continue
-                }
-                
-                $limitedDllFiles = $dllFiles | Select-Object -First $maxFiles
-                
-                foreach ($dll in $limitedDllFiles) {
-                    try {
-                        if ($dll.FullName -like "*\Windows\*") {
-                            continue
-                        }
-                        $cert = Get-AuthenticodeSignature -FilePath $dll.FullName -ErrorAction Stop
-                        if ($cert.Status -ne 'Valid') {
-                            Write-Log "Found unsigned DLL: $($dll.FullName)"
-                            Quarantine-File -filePath $dll.FullName
-                        }
-                    }
-                    catch {
-                        Write-Log "Error processing $($dll.FullName): $($_.Exception.Message)"
-                    }
-                }
-            }
-            catch {
-                Write-Log "Drive scan error on ${root}: $($_.Exception.Message)"
+    foreach ($drive in $drives) {
+        $root = $drive.DeviceID + "\"
+        Write-Log "Scanning drive: $root"
+        try {
+            $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -ErrorAction SilentlyContinue
+            
+            if ($null -eq $dllFiles -or $dllFiles.Count -eq 0) {
+                Write-Log "No DLL files found on drive $root"
                 continue
             }
+            
+            $limitedDllFiles = $dllFiles | Select-Object -First $maxFiles
+            
+            foreach ($dll in $limitedDllFiles) {
+                try {
+                    if ($dll.FullName -like "*\Windows\*") {
+                        continue
+                    }
+                    $cert = Get-AuthenticodeSignature -FilePath $dll.FullName -ErrorAction Stop
+                    if ($cert.Status -ne 'Valid') {
+                        Write-Log "Found unsigned DLL: $($dll.FullName)"
+                        Quarantine-File -filePath $dll.FullName
+                    }
+                }
+                catch {
+                    Write-Log "Error processing $($dll.FullName): $($_.Exception.Message)"
+                }
+            }
         }
-    }
-    catch {
-        Write-Log "Fatal error in scan: $($_.Exception.Message)"
-        throw
+        catch {
+            Write-Log "Drive scan error on ${root}: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -152,11 +136,13 @@ try {
     Write-Log "Starting antivirus scan"
     Remove-UnsignedDLLs
     Write-Log "Antivirus scan completed successfully"
- }
+}
 catch {
-    Write-Log "Script crashed: $($_.Exception.Message)"
+    Write-Log "Script encountered an error: $($_.Exception.Message)"
     Write-Log "Error details: $($_.ScriptStackTrace)"
+    $exitCode = 1  # Set failure code but don’t exit yet
 }
 finally {
-Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 1
+    exit $exitCode  # Controlled exit with appropriate code
 }
