@@ -2,14 +2,6 @@ $ErrorActionPreference = 'Stop'
 
 # Simple Antivirus by Gorstak
 
-# Ensure script directory exists and copy script
-if (-not (Test-Path $scriptDir)) {
-    New-Item -Path $scriptDir -ItemType Directory -Force
-}
-if (-not (Test-Path $scriptPath)) {
-    Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force
-}
-
 # Define scheduled task parameters
 $taskName = "SimpleAntivirusStartup"
 $taskDescription = "Runs the Simple Antivirus script at user logon with admin privileges."
