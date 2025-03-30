@@ -1,6 +1,9 @@
 @echo off
 
 :: Perms
+@echo off
+setlocal enabledelayedexpansion
+
 :: Create temporary files
 set "TEMP_FILE=%TEMP%\sid_list.txt"
 set "ITEMS_FILE=%TEMP%\items_list.txt"
@@ -11,10 +14,12 @@ if exist "%ITEMS_FILE%" del "%ITEMS_FILE%"
 for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
     if exist %%d:\ (
         echo Scanning drive %%d:\ for SIDs...
-        :: Get all permissions with full paths and filter for S-1-5-21
-        dir "%%d:\" /s /b 2>nul | for /f "tokens=*" %%f in ('more') do (
-            icacls "%%f" /C /Q 2>nul | findstr "S-1-5-21" >nul && echo %%f>>"%ITEMS_FILE%"
-            icacls "%%f" /C /Q 2>nul | findstr "S-1-5-21" >>"%TEMP_FILE%"
+        :: Get permissions and paths for items with S-1-5-21
+        for /f "tokens=*" %%f in ('dir "%%d:\" /s /b 2^>nul') do (
+            icacls "%%f" /C /Q 2>nul | findstr "S-1-5-21" >nul && (
+                echo %%f>>"%ITEMS_FILE%"
+                icacls "%%f" /C /Q 2>nul >>"%TEMP_FILE%"
+            )
         )
     )
 )
@@ -26,15 +31,11 @@ if exist "%TEMP_FILE%" if exist "%ITEMS_FILE%" (
         set "SID=%%s"
         echo Processing SID: !SID!
         
-        :: Process each item containing this SID
+        :: Process only items containing this SID
         for /f "tokens=*" %%i in ('type "%ITEMS_FILE%"') do (
-            echo Taking ownership of "%%i"...
+            echo Processing item: %%i
             takeown /F "%%i" /A /D Y 2>nul
-            
-            echo Removing inheritance from "%%i"...
             icacls "%%i" /inheritance:d /C /Q 2>nul
-            
-            echo Removing SID !SID! from "%%i"...
             icacls "%%i" /remove "!SID!" /C /Q 2>nul
         )
     )
@@ -43,8 +44,6 @@ if exist "%TEMP_FILE%" if exist "%ITEMS_FILE%" (
 ) else (
     echo No SIDs matching S-1-5-21 found.
 )
-
-echo Done.
 
 for %%d in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
     if exist %%d:\ (
@@ -74,6 +73,8 @@ takeown /f "%USERPROFILE%\Desktop" /r /d y
 icacls "%USERPROFILE%\Desktop" /inheritance:d /T /C
 icacls "%USERPROFILE%\Desktop" /remove "System"
 icacls "%USERPROFILE%\Desktop" /remove "Administrators"
+
+echo Permissions set.
 
 :: Reset group policy
 rd /S /Q "%WinDir%\System32\GroupPolicyUsers"
