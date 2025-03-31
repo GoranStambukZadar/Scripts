@@ -12,7 +12,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 :: Step 3: Execute PowerShell (.ps1) files alphabetically
 for /f "tokens=*" %%P in ('dir /b /o:n *.ps1') do (
-    powershell -ExecutionPolicy Bypass -File "%%P"
+    start "" powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File "%%P"
 )
 
 :: Step 4: Execute Registry (.reg) files alphabetically
