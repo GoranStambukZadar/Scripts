@@ -1,5 +1,3 @@
-# Simple Antivirus by Gorstak
-
 # Define scheduled task parameters
 $taskName = "SimpleAntivirusStartup"
 $taskDescription = "Runs the Simple Antivirus script at user logon with admin privileges."
@@ -30,7 +28,7 @@ function Write-Log {
     param ([string]$message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logEntry = "[$timestamp] $message"
-    Write-Output $logEntry  # Changed to Write-Output for batch compatibility
+    Write-Output $logEntry
     if ((Test-Path $logFile) -and ((Get-Item $logFile -ErrorAction SilentlyContinue).Length -ge 10MB)) {
         $archiveName = "$quarantineFolder\antivirus_log_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
         Rename-Item -Path $logFile -NewName $archiveName -ErrorAction SilentlyContinue
@@ -70,45 +68,17 @@ if (Test-Path $localDatabase) {
     Write-Log "Loaded $($scannedFiles.Count) scanned file entries from database."
 }
 
+# Remove Unsigned DLLs
 function Remove-UnsignedDLLs {
-    param ([int]$maxFiles = 100)
-    Write-Log "Starting unsigned DLL scan across all drives."
-    $drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -in (2, 3, 4) }
-    if (-not $drives) {
-        Write-Log "No drives detected for scanning."
-        return
-    }
+    $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.DriveType -in @('Fixed', 'Removable', 'Network') }
     foreach ($drive in $drives) {
-        $root = $drive.DeviceID + "\"
-        Write-Log "Scanning drive: $root"
-        try {
-            $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -ErrorAction SilentlyContinue
-            
-            if ($null -eq $dllFiles -or $dllFiles.Count -eq 0) {
-                Write-Log "No DLL files found on drive $root"
-                continue
+        $dllFiles = Get-ChildItem -Path $drive.Root -Recurse -Filter *.dll -ErrorAction SilentlyContinue
+        foreach ($dll in $dllFiles) {
+            $signatureCheck = Calculate-FileHash -FilePath $dll.FullName
+            if ($signatureCheck.Status -ne "Valid") {
+                Stop-ProcessUsingDLL -filePath $dll.FullName
+                Quarantine-File -filePath $dll.FullName
             }
-            
-            $limitedDllFiles = $dllFiles | Select-Object -First $maxFiles
-            
-            foreach ($dll in $limitedDllFiles) {
-                try {
-                    if ($dll.FullName -like "*\Windows\*") {
-                        continue
-                    }
-                    $cert = Get-AuthenticodeSignature -FilePath $dll.FullName -ErrorAction Stop
-                    if ($cert.Status -ne 'Valid') {
-                        Write-Log "Found unsigned DLL: $($dll.FullName)"
-                        Quarantine-File -filePath $dll.FullName
-                    }
-                }
-                catch {
-                    Write-Log "Error processing $($dll.FullName): $($_.Exception.Message)"
-                }
-            }
-        }
-        catch {
-            Write-Log "Drive scan error on ${root}: $($_.Exception.Message)"
         }
     }
 }
@@ -116,11 +86,21 @@ function Remove-UnsignedDLLs {
 function Calculate-FileHash {
     param ([string]$filePath)
     try {
+        $signature = Get-AuthenticodeSignature -FilePath $filePath -ErrorAction Stop
         $hash = Get-FileHash -Path $filePath -Algorithm SHA256 -ErrorAction Stop
-        return $hash.Hash.ToLower()
+        $result = [PSCustomObject]@{
+            Hash = $hash.Hash.ToLower()
+            Status = $signature.Status
+            StatusMessage = $signature.StatusMessage
+        }
+        return $result
     } catch {
-        Write-Log "Error hashing ${filePath}: $($_.Exception.Message)"
-        return $null
+        Write-Log "Error processing ${filePath}: $($_.Exception.Message)"
+        return [PSCustomObject]@{
+            Hash = $null
+            Status = "Error"
+            StatusMessage = $_.Exception.Message
+        }
     }
 }
 
@@ -157,6 +137,6 @@ Start-Job -ScriptBlock {
         } catch {
             Write-Log "Error during execution: $($_.Exception.Message)"
         }
-        Start-Sleep -Seconds 1  # Adjust interval for your needs
+        Start-Sleep -Seconds 1
     }
 }
