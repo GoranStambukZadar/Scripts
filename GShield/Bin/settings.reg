@@ -324,6 +324,7 @@ Windows Registry Editor Version 5.00
 
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\DOS Devices]
 "AUX"=-
+"PRN"=-
 
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server]
 "fDisableAutoReconnect"=dword:00000001
