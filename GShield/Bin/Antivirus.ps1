@@ -1,5 +1,3 @@
-$ErrorActionPreference = 'Stop'
-
 # Simple Antivirus by Gorstak
 
 # Define scheduled task parameters
@@ -26,7 +24,6 @@ $quarantineFolder = "C:\Quarantine"
 $logFile = "$quarantineFolder\antivirus_log.txt"
 $localDatabase = "$quarantineFolder\scanned_files.txt"
 $scannedFiles = @{}
-$exitCode = 0  # Default to success
 
 # Logging Function with Rotation
 function Write-Log {
@@ -151,17 +148,15 @@ function Stop-ProcessUsingDLL {
     }
 }
 
-try {
-    Write-Log "Starting antivirus scan"
-    Remove-UnsignedDLLs
-    Write-Log "Antivirus scan completed successfully"
-}
-catch {
-    Write-Log "Script encountered an error: $($_.Exception.Message)"
-    Write-Log "Error details: $($_.ScriptStackTrace)"
-    $exitCode = 1  # Set failure code but don’t exit yet
-}
-finally {
-    Start-Sleep -Seconds 1
-    exit $exitCode  # Controlled exit with appropriate code
+Start-Job -ScriptBlock {
+    while ($true) {
+        try {
+            Write-Log "Starting antivirus scan"
+            Remove-UnsignedDLLs
+            Write-Log "Antivirus scan completed successfully"
+        } catch {
+            Write-Log "Error during execution: $($_.Exception.Message)"
+        }
+        Start-Sleep -Seconds 1  # Adjust interval for your needs
+    }
 }
