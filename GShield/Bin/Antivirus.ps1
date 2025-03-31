@@ -72,15 +72,44 @@ if (Test-Path $localDatabase) {
 
 # Remove Unsigned DLLs
 function Remove-UnsignedDLLs {
+    param ([int]$maxFiles = 100)
+    Write-Log "Starting unsigned DLL scan across all drives."
     $drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -in (2, 3, 4) }
+    if (-not $drives) {
+        Write-Log "No drives detected for scanning."
+        return
+    }
     foreach ($drive in $drives) {
-        $dllFiles = Get-ChildItem -Path $drive.Root -Recurse -Filter *.dll -ErrorAction SilentlyContinue
-        foreach ($dll in $dllFiles) {
-            $signatureCheck = Calculate-FileHash -FilePath $dll.FullName
-            if ($signatureCheck.Status -ne "Valid") {
-                Stop-ProcessUsingDLL -filePath $dll.FullName
-                Quarantine-File -filePath $dll.FullName
+        $root = $drive.DeviceID + "\"
+        Write-Log "Scanning drive: $root"
+        try {
+            $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -ErrorAction SilentlyContinue
+            
+            if ($null -eq $dllFiles -or $dllFiles.Count -eq 0) {
+                Write-Log "No DLL files found on drive $root"
+                continue
             }
+            
+            $limitedDllFiles = $dllFiles | Select-Object -First $maxFiles
+            
+            foreach ($dll in $limitedDllFiles) {
+                try {
+                    if ($dll.FullName -like "*\Windows\*") {
+                        continue
+                    }
+                    $cert = Get-AuthenticodeSignature -FilePath $dll.FullName -ErrorAction Stop
+                    if ($cert.Status -ne 'Valid') {
+                        Write-Log "Found unsigned DLL: $($dll.FullName)"
+                        Quarantine-File -filePath $dll.FullName
+                    }
+                }
+                catch {
+                    Write-Log "Error processing $($dll.FullName): $($_.Exception.Message)"
+                }
+            }
+        }
+        catch {
+            Write-Log "Drive scan error on ${root}: $($_.Exception.Message)"
         }
     }
 }
