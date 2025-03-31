@@ -4,6 +4,14 @@
 $taskName = "SimpleAntivirusStartup"
 $taskDescription = "Runs the Simple Antivirus script at user logon with admin privileges."
 
+# Define script path
+$scriptDir = "C:\Windows\Setup\Scripts"
+$scriptPath = "$scriptDir\Antivirus.ps1"
+$quarantineFolder = "C:\Quarantine"
+$logFile = "$quarantineFolder\antivirus_log.txt"
+$localDatabase = "$quarantineFolder\scanned_files.txt"
+$scannedFiles = @{}
+
 # Check if task exists
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 
@@ -16,14 +24,6 @@ if (-not $existingTask) {
     # Register the task
     Register-ScheduledTask -TaskName $taskName -InputObject $task
 }
-
-# Define script path
-$scriptDir = "C:\Windows\Setup\Scripts"
-$scriptPath = "$scriptDir\Antivirus.ps1"
-$quarantineFolder = "C:\Quarantine"
-$logFile = "$quarantineFolder\antivirus_log.txt"
-$localDatabase = "$quarantineFolder\scanned_files.txt"
-$scannedFiles = @{}
 
 # Logging Function with Rotation
 function Write-Log {
