@@ -72,7 +72,7 @@ if (Test-Path $localDatabase) {
 
 # Remove Unsigned DLLs
 function Remove-UnsignedDLLs {
-    $drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.DriveType -in @('Fixed', 'Removable', 'Network') }
+    $drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -in (2, 3, 4) }
     foreach ($drive in $drives) {
         $dllFiles = Get-ChildItem -Path $drive.Root -Recurse -Filter *.dll -ErrorAction SilentlyContinue
         foreach ($dll in $dllFiles) {
