@@ -12,67 +12,106 @@ $logFile = "$quarantineFolder\antivirus_log.txt"
 $localDatabase = "$quarantineFolder\scanned_files.txt"
 $scannedFiles = @{}
 
-# Check if task exists
-$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-
-if (-not $existingTask) {
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Highest
-    $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Description $taskDescription
-
-    # Register the task
-    Register-ScheduledTask -TaskName $taskName -InputObject $task
-}
+# Check if running as admin
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
+Write-Host "Running as admin: $isAdmin"
 
 # Logging Function with Rotation
 function Write-Log {
     param ([string]$message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logEntry = "[$timestamp] $message"
-    Write-Output $logEntry
+    Write-Host "Logging: $logEntry"
+    if (-not (Test-Path $quarantineFolder)) {
+        try {
+            New-Item -Path $quarantineFolder -ItemType Directory -Force -ErrorAction Stop | Out-Null
+            Write-Host "Created folder: $quarantineFolder"
+        } catch {
+            Write-Host "Failed to create folder: $($_.Exception.Message)"
+            return
+        }
+    }
     if ((Test-Path $logFile) -and ((Get-Item $logFile -ErrorAction SilentlyContinue).Length -ge 10MB)) {
         $archiveName = "$quarantineFolder\antivirus_log_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-        Rename-Item -Path $logFile -NewName $archiveName -ErrorAction SilentlyContinue
-        Write-Output "Rotated log to $archiveName"
+        try {
+            Rename-Item -Path $logFile -NewName $archiveName -ErrorAction Stop
+            $logEntry = "[$timestamp] Rotated log to $archiveName"
+            Write-Host "Rotated log to: $archiveName"
+        } catch {
+            $logEntry += " (Log rotation failed: $($_.Exception.Message))"
+        }
     }
     try {
-        Add-Content -Path $logFile -Value $logEntry -ErrorAction Stop
+        $logEntry | Out-File -FilePath $logFile -Append -Encoding UTF8 -ErrorAction Stop
+        Write-Host "Wrote to log: $logFile"
     } catch {
-        Write-Output "Failed to write to log: $($_.Exception.Message)"
+        Write-Host "Failed to write log: $($_.Exception.Message)"
     }
+}
+
+# Initial log
+Write-Host "Script starting"
+Write-Log "Script initialized. Admin: $isAdmin"
+
+# Check if task exists
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if (-not $existingTask -and $isAdmin) {
+    try {
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Highest
+        $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Description $taskDescription
+        Register-ScheduledTask -TaskName $taskName -InputObject $task -ErrorAction Stop
+        Write-Log "Scheduled task '$taskName' registered successfully"
+    } catch {
+        Write-Log "Failed to register scheduled task: $($_.Exception.Message)"
+    }
+} elseif (-not $isAdmin) {
+    Write-Log "Skipping task registration: Admin privileges required"
 }
 
 # Ensure script directory exists and copy script
 if (-not (Test-Path $scriptDir)) {
-    New-Item -Path $scriptDir -ItemType Directory -Force | Out-Null
-    Write-Log "Created script directory: $scriptDir"
+    try {
+        New-Item -Path $scriptDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+        Write-Log "Created script directory: $scriptDir"
+    } catch {
+        Write-Log "Failed to create script directory: $($_.Exception.Message)"
+    }
 }
 if (-not (Test-Path $scriptPath)) {
-    Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force
-    Write-Log "Copied script to: $scriptPath"
-}
-
-# Create Quarantine Folder and Log
-if (-not (Test-Path -Path $quarantineFolder)) {
-    New-Item -Path $quarantineFolder -ItemType Directory -Force | Out-Null
-    Write-Log "Created quarantine folder: $quarantineFolder"
+    try {
+        Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force -ErrorAction Stop
+        Write-Log "Copied script to: $scriptPath"
+    } catch {
+        Write-Log "Failed to copy script: $($_.Exception.Message)"
+    }
 }
 
 # Load Scanned Files Database
 if (Test-Path $localDatabase) {
-    $lines = Get-Content $localDatabase -ErrorAction SilentlyContinue
-    foreach ($line in $lines) {
-        if ($line -match "^([0-9a-f]{64}),(true|false)$") {
-            $scannedFiles[$matches[1]] = [bool]$matches[2]
+    try {
+        $lines = Get-Content $localDatabase -ErrorAction SilentlyContinue
+        foreach ($line in $lines) {
+            if ($line -match "^([0-9a-f]{64}),(true|false)$") {
+                $scannedFiles[$matches[1]] = [bool]$matches[2]
+            }
         }
+        Write-Log "Loaded $($scannedFiles.Count) scanned file entries from database."
+    } catch {
+        Write-Log "Failed to load scanned files database: $($_.Exception.Message)"
     }
-    Write-Log "Loaded $($scannedFiles.Count) scanned file entries from database."
+} else {
+    try {
+        "Initial entry" | Out-File -FilePath $localDatabase -Encoding UTF8 -ErrorAction Stop
+        Write-Log "Created ${localDatabase}"
+    } catch {
+        Write-Log "Failed to create ${localDatabase}: $($_.Exception.Message)"
+    }
 }
 
 # Remove Unsigned DLLs
 function Remove-UnsignedDLLs {
-    param ([int]$maxFiles = 100)
     Write-Log "Starting unsigned DLL scan across all drives."
     $drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -in (2, 3, 4) }
     if (-not $drives) {
@@ -83,16 +122,14 @@ function Remove-UnsignedDLLs {
         $root = $drive.DeviceID + "\"
         Write-Log "Scanning drive: $root"
         try {
+            # Get all DLL files from the drive
             $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -ErrorAction SilentlyContinue
-            
             if ($null -eq $dllFiles -or $dllFiles.Count -eq 0) {
                 Write-Log "No DLL files found on drive $root"
                 continue
             }
             
-            $limitedDllFiles = $dllFiles | Select-Object -First $maxFiles
-            
-            foreach ($dll in $limitedDllFiles) {
+            foreach ($dll in $dllFiles) {
                 try {
                     if ($dll.FullName -like "*\Windows\*") {
                         continue
@@ -102,17 +139,16 @@ function Remove-UnsignedDLLs {
                         Write-Log "Found unsigned DLL: $($dll.FullName)"
                         Quarantine-File -filePath $dll.FullName
                     }
-                }
-                catch {
+                } catch {
                     Write-Log "Error processing $($dll.FullName): $($_.Exception.Message)"
                 }
             }
-        }
-        catch {
+        } catch {
             Write-Log "Drive scan error on ${root}: $($_.Exception.Message)"
         }
     }
 }
+
 
 function Calculate-FileHash {
     param ([string]$filePath)
@@ -159,15 +195,24 @@ function Stop-ProcessUsingDLL {
     }
 }
 
-Start-Job -ScriptBlock {
-    while ($true) {
-        try {
-            Write-Log "Starting antivirus scan"
+# Run the scan
+Write-Log "Starting antivirus service"
+$iteration = 0
+while ($true) {
+    $iteration++
+    try {
+        if ($isAdmin) {
+            Write-Log "Beginning scan iteration $iteration"
             Remove-UnsignedDLLs
-            Write-Log "Antivirus scan completed successfully"
-        } catch {
-            Write-Log "Error during execution: $($_.Exception.Message)"
+            Write-Log "Antivirus scan completed successfully for iteration $iteration"
+        } else {
+            Write-Log "Skipping scan: Admin privileges required"
         }
-        Start-Sleep -Seconds 1
+    } catch {
+        $errorMessage = $_.Exception.Message
+        Write-Log ("Critical error during iteration " + $iteration + ": " + $_.Exception.Message)
+        Write-Host "Caught critical error: $errorMessage"
     }
+    Write-Host "Sleeping for 10 seconds after iteration $iteration"
+    Start-Sleep -Seconds 1
 }
