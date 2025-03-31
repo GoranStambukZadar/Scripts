@@ -295,9 +295,6 @@ Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\PowerShell]
 "DisableRemoteExecution"=dword:00000001
 
-[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Srp\Gp]
-"RuleCount"=dword:00000000
-
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WinRM]
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service]
@@ -327,7 +324,6 @@ Windows Registry Editor Version 5.00
 
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\DOS Devices]
 "AUX"=-
-"PRN"=-
 
 [HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Terminal Server]
 "fDisableAutoReconnect"=dword:00000001
