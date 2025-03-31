@@ -1,3 +1,5 @@
+# Simple Antivirus by Gorstak
+
 # Define scheduled task parameters
 $taskName = "SimpleAntivirusStartup"
 $taskDescription = "Runs the Simple Antivirus script at user logon with admin privileges."
