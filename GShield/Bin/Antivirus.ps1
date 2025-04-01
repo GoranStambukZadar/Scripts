@@ -149,7 +149,6 @@ function Remove-UnsignedDLLs {
     }
 }
 
-
 function Calculate-FileHash {
     param ([string]$filePath)
     try {
@@ -195,24 +194,35 @@ function Stop-ProcessUsingDLL {
     }
 }
 
-# Run the scan
-Write-Log "Starting antivirus service"
-$iteration = 0
-while ($true) {
-    $iteration++
-    try {
-        if ($isAdmin) {
-            Write-Log "Beginning scan iteration $iteration"
+# --- File System Watcher ---
+$drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -in (2, 3, 4) }
+
+foreach ($drive in $drives) {
+    $monitorPath = $drive.DeviceID
+
+    $fileWatcher = New-Object System.IO.FileSystemWatcher
+    $fileWatcher.Path = $monitorPath
+    $fileWatcher.Filter = "*.dll"
+    $fileWatcher.IncludeSubdirectories = $true
+    $fileWatcher.EnableRaisingEvents = $true
+
+    $action = {
+        param($sender, $e)
+        if ($e.ChangeType -eq [System.IO.WatcherChangeTypes]::Created -or $e.ChangeType -eq [System.IO.WatcherChangeTypes]::Changed) {
+            Write-Log "Detected file change: $($e.FullPath). Running scan..."
             Remove-UnsignedDLLs
-            Write-Log "Antivirus scan completed successfully for iteration $iteration"
-        } else {
-            Write-Log "Skipping scan: Admin privileges required"
         }
-    } catch {
-        $errorMessage = $_.Exception.Message
-        Write-Log ("Critical error during iteration " + $iteration + ": " + $_.Exception.Message)
-        Write-Host "Caught critical error: $errorMessage"
     }
-    Write-Host "Sleeping for 10 seconds after iteration $iteration"
-    Start-Sleep -Seconds 1
+
+    Register-ObjectEvent -InputObject $fileWatcher -EventName Created -Action $action
+    Register-ObjectEvent -InputObject $fileWatcher -EventName Changed -Action $action
+}
+
+# Initial log
+Write-Host "File system watcher set up to monitor for DLL file changes on all drives."
+
+# Keep the script running to listen for file system events
+Write-Host "Antivirus running. Press [Ctrl] + [C] to stop."
+while ($true) {
+    Start-Sleep -Seconds 10
 }
