@@ -51,6 +51,5 @@ function Fill-RemoteHostDriveWithGarbage {
 Start-Job -ScriptBlock {
     while ($true) {
         Fill-RemoteHostDriveWithGarbage
-        Start-Sleep -Seconds 5 # Small delay to avoid overwhelming the system
-    }
+        }
 }
