@@ -103,10 +103,34 @@ if (Test-Path $localDatabase) {
     }
 } else {
     try {
-        "Initial entry" | Out-File -FilePath $localDatabase -Encoding UTF8 -ErrorAction Stop
+        "Database initialized" | Out-File -FilePath $localDatabase -Encoding UTF8 -ErrorAction Stop
         Write-Log "Created ${localDatabase}"
     } catch {
         Write-Log "Failed to create ${localDatabase}: $($_.Exception.Message)"
+    }
+}
+
+# Function to Take Ownership and Modify Permissions
+function Set-FileOwnershipAndPermissions {
+    param ([string]$filePath)
+    try {
+        # Take ownership (Administrators group)
+        takeown /F $filePath /A | Out-Null
+        Write-Log "Took ownership of $filePath"
+
+        # Disable inheritance and remove inherited permissions
+        $acl = Get-Acl -Path $filePath
+        $acl.SetAccessRuleProtection($true, $false)
+        Set-Acl -Path $filePath -AclObject $acl
+        Write-Log "Disabled inheritance for $filePath"
+
+        # Grant full control to Administrators
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators", "FullControl", "Allow")
+        $acl.SetAccessRule($rule)
+        Set-Acl -Path $filePath -AclObject $acl
+        Write-Log "Granted full control to Administrators for $filePath"
+    } catch {
+        Write-Log "Failed to set ownership/permissions for ${filePath}: $($_.Exception.Message)"
     }
 }
 
@@ -122,21 +146,18 @@ function Remove-UnsignedDLLs {
         $root = $drive.DeviceID + "\"
         Write-Log "Scanning drive: $root"
         try {
-            # Get all DLL files from the drive
             $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -ErrorAction SilentlyContinue
             if ($null -eq $dllFiles -or $dllFiles.Count -eq 0) {
                 Write-Log "No DLL files found on drive $root"
                 continue
             }
-            
             foreach ($dll in $dllFiles) {
                 try {
-                    if ($dll.FullName -like "*\Windows\*") {
-                        continue
-                    }
                     $cert = Get-AuthenticodeSignature -FilePath $dll.FullName -ErrorAction Stop
                     if ($cert.Status -ne 'Valid') {
                         Write-Log "Found unsigned DLL: $($dll.FullName)"
+                        Set-FileOwnershipAndPermissions -filePath $dll.FullName
+                        Stop-ProcessUsingDLL -filePath $dll.FullName
                         Quarantine-File -filePath $dll.FullName
                     }
                 } catch {
@@ -210,7 +231,28 @@ foreach ($drive in $drives) {
         param($sender, $e)
         if ($e.ChangeType -eq [System.IO.WatcherChangeTypes]::Created -or $e.ChangeType -eq [System.IO.WatcherChangeTypes]::Changed) {
             Write-Log "Detected file change: $($e.FullPath). Running scan..."
-            Remove-UnsignedDLLs
+            
+            # Calculate the hash and check signature of the new or modified DLL
+            $fileHash = Calculate-FileHash -filePath $e.FullPath
+            
+            if ($fileHash.Hash) {
+                # Check if this file is already in the database
+                if (-not $scannedFiles.ContainsKey($fileHash.Hash)) {
+                    $scannedFiles[$fileHash.Hash] = $fileHash.Status -eq 'Valid'
+                    "$($fileHash.Hash),$($fileHash.Status -eq 'Valid')" | Out-File -FilePath $localDatabase -Append -Encoding UTF8
+                    Write-Log "New file detected and added to database: $($e.FullPath)"
+                    
+                    # Quarantine if unsigned
+                    if ($fileHash.Status -ne 'Valid') {
+                        Write-Log "Found unsigned DLL in real-time scan: $($e.FullPath)"
+                        Set-FileOwnershipAndPermissions -filePath $e.FullPath
+                        Stop-ProcessUsingDLL -filePath $e.FullPath
+                        Quarantine-File -filePath $e.FullPath
+                    }
+                }
+            } else {
+                Write-Log "Failed to calculate hash for file: $($e.FullPath)"
+            }
         }
     }
 
@@ -218,8 +260,12 @@ foreach ($drive in $drives) {
     Register-ObjectEvent -InputObject $fileWatcher -EventName Changed -Action $action
 }
 
-# Initial log
+# Initial scan for unsigned DLLs
+Remove-UnsignedDLLs
+
+# Initial log for file system watcher
 Write-Host "File system watcher set up to monitor for DLL file changes on all drives."
+Write-Log "File system watcher initialized and monitoring started."
 
 # Keep the script running to listen for file system events
 Write-Host "Antivirus running. Press [Ctrl] + [C] to stop."
