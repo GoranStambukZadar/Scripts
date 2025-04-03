@@ -15,6 +15,10 @@ if (isset($_GET['id'])) {
     $stmt->execute([$_GET['id']]);
     $profile = $stmt->fetch(PDO::FETCH_ASSOC);
     $isOwnProfile = isset($_SESSION['user_id']) && $profile && $profile['id'] == $_SESSION['user_id'];
+    // Debugging: Show the ID being queried
+    if (!$profile) {
+        echo "<p>Debug: No profile found for ID: " . htmlspecialchars($_GET['id']) . ". Session user_id: " . (isset($_SESSION['user_id']) ? htmlspecialchars($_SESSION['user_id']) : 'Not set') . "</p>";
+    }
 }
 
 // Handle profile update
