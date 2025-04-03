@@ -7,19 +7,47 @@ if (!isset($_SESSION['posts'])) {
     $_SESSION['posts'] = [];
 }
 
+// Define cooldown period (in seconds)
+$cooldownPeriod = 30; // Adjust this as needed
+
 // Handle new post
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['content'])) {
     if (isset($_SESSION['user_id'])) {
         $stmt = $pdo->prepare("SELECT name FROM profiles WHERE id = ?");
         $stmt->execute([$_SESSION['user_id']]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        $_SESSION['posts'][] = [
-            'id' => uniqid(),
-            'user' => $user['name'],
-            'content' => $_POST['content'],
-            'time' => date('H:i')
-        ];
+
+        $currentTime = time();
+        $content = trim($_POST['content']);
+
+        // Initialize session variables for rate limiting if not set
+        if (!isset($_SESSION['last_post_time'])) {
+            $_SESSION['last_post_time'] = 0;
+        }
+        if (!isset($_SESSION['last_post_content'])) {
+            $_SESSION['last_post_content'] = '';
+        }
+
+        // Check cooldown
+        $timeSinceLastPost = $currentTime - $_SESSION['last_post_time'];
+        if ($timeSinceLastPost < $cooldownPeriod) {
+            $error = "Please wait " . ($cooldownPeriod - $timeSinceLastPost) . " seconds before posting again.";
+        }
+        // Check for duplicate message
+        elseif ($content === $_SESSION['last_post_content']) {
+            $error = "You cannot post the same message twice in a row.";
+        }
+        // If no issues, process the post
+        elseif (!empty($content)) {
+            $_SESSION['posts'][] = [
+                'id' => uniqid(),
+                'user' => $user['name'],
+                'content' => $content,
+                'time' => date('H:i')
+            ];
+            $_SESSION['last_post_time'] = $currentTime;
+            $_SESSION['last_post_content'] = $content;
+        }
     }
 }
 
@@ -77,6 +105,9 @@ if (isset($_SESSION['user_id'])) {
     <!-- Wall Posts -->
     <div class="flex-1 overflow-y-auto p-4 posts-container">
       <h2 class="text-xl font-bold mb-4">Love4Free Wall</h2>
+      <?php if (isset($error)): ?>
+        <p class="text-red-500 mb-4"><?php echo $error; ?></p>
+      <?php endif; ?>
       <div id="posts">
         <?php foreach (array_reverse($_SESSION['posts']) as $post): ?>
           <div class="p-3 mb-3 bg-gray-700 rounded-lg">
