@@ -5,6 +5,22 @@ net user defaultuser0 /delete
 net user defaultuser1 /delete
 net user defaultuser100000 /delete
 
+
+:: Riddance
+for /f "tokens=1,2*" %%x in ('whoami /user /fo list ^| findstr /i "name sid"') do (
+    set "USERNAME=%%z"
+    set "USERSID=%%y"
+)
+for /f "tokens=5 delims=-" %%r in ("!USERSID!") do set "RID=%%r"
+for /f "tokens=*" %%u in ('net user ^| findstr /i /c:"User" ^| find /v "command completed successfully"') do (
+    set "USERLINE=%%u"
+    set "USERRID=!USERLINE:~-4!"
+    if !USERRID! neq !RID! (
+        echo Removing user: !USERLINE!
+        net user "!USERLINE!" /delete
+    )
+)
+
 :: disable netbios
 sc config lmhosts start= disabled
 @powershell.exe -ExecutionPolicy Bypass -Command "Get-WmiObject -Class Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true } | ForEach-Object { $_.SetTcpipNetbios(2) }"
