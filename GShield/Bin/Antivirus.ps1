@@ -1,4 +1,4 @@
-# Simple Antivirus by Gorstak (Hardened for Reinstalls)
+# Simple Antivirus by Gorstak (Database Reset + System32 Focus)
 
 # Define paths and parameters
 $taskName = "SimpleAntivirusStartup"
@@ -8,7 +8,7 @@ $scriptPath = "$scriptDir\Antivirus.ps1"
 $quarantineFolder = "C:\Quarantine"
 $logFile = "$quarantineFolder\antivirus_log.txt"
 $localDatabase = "$quarantineFolder\scanned_files.txt"
-$scannedFiles = @{}
+$scannedFiles = @{} # Initialize empty hash table
 
 # Check admin privileges
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
@@ -51,7 +51,7 @@ if (-not (Test-Path $scriptPath) -or (Get-Item $scriptPath).LastWriteTime -lt (G
     Write-Log "Copied/Updated script to: $scriptPath"
 }
 
-# Register scheduled task (recreate if user context changed)
+# Register scheduled task as SYSTEM
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if (-not $existingTask -and $isAdmin) {
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
@@ -64,31 +64,35 @@ if (-not $existingTask -and $isAdmin) {
     Write-Log "Skipping task registration: Admin privileges required"
 }
 
-# Load Scanned Files Database
+# Load or Reset Scanned Files Database
 if (Test-Path $localDatabase) {
-    $lines = Get-Content $localDatabase -ErrorAction SilentlyContinue
-    foreach ($line in $lines) {
-        if ($line -match "^([0-9a-f]{64}),(true|false)$") {
-            $scannedFiles[$matches[1]] = [bool]$matches[2]
+    try {
+        $scannedFiles.Clear() # Reset hash table before loading
+        $lines = Get-Content $localDatabase -ErrorAction Stop
+        foreach ($line in $lines) {
+            if ($line -match "^([0-9a-f]{64}),(true|false)$") {
+                $scannedFiles[$matches[1]] = [bool]$matches[2]
+            }
         }
+        Write-Log "Loaded $($scannedFiles.Count) scanned file entries from database."
+    } catch {
+        Write-Log "Failed to load database: $($_.Exception.Message)"
+        $scannedFiles.Clear() # Reset on failure
     }
-    Write-Log "Loaded $($scannedFiles.Count) scanned file entries from database."
 } else {
+    $scannedFiles.Clear() # Ensure reset if no database
     New-Item -Path $localDatabase -ItemType File -Force -ErrorAction Stop | Out-Null
     Write-Log "Created new database: $localDatabase"
 }
 
-# Take Ownership and Modify Permissions
+# Take Ownership and Modify Permissions (Aggressive)
 function Set-FileOwnershipAndPermissions {
     param ([string]$filePath)
     try {
         takeown /F $filePath /A | Out-Null
-        $acl = Get-Acl -Path $filePath
-        $acl.SetAccessRuleProtection($true, $false)
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators", "FullControl", "Allow")
-        $acl.SetAccessRule($rule)
-        Set-Acl -Path $filePath -AclObject $acl -ErrorAction Stop
-        Write-Log "Set ownership and permissions for $filePath"
+        icacls $filePath /reset | Out-Null
+        icacls $filePath /grant "Administrators:F" /inheritance:d | Out-Null
+        Write-Log "Forcibly set ownership and permissions for $filePath"
         return $true
     } catch {
         Write-Log "Failed to set ownership/permissions for ${filePath}: $($_.Exception.Message)"
@@ -102,6 +106,7 @@ function Calculate-FileHash {
     try {
         $signature = Get-AuthenticodeSignature -FilePath $filePath -ErrorAction Stop
         $hash = Get-FileHash -Path $filePath -Algorithm SHA256 -ErrorAction Stop
+        Write-Log "Signature status for ${filePath}: $($signature.Status) - $($signature.StatusMessage)"
         return [PSCustomObject]@{
             Hash = $hash.Hash.ToLower()
             Status = $signature.Status
@@ -113,108 +118,185 @@ function Calculate-FileHash {
     }
 }
 
-# Quarantine File
+# Quarantine File (Crash-Proof)
 function Quarantine-File {
     param ([string]$filePath)
-    $quarantinePath = Join-Path -Path $quarantineFolder -ChildPath (Split-Path $filePath -Leaf)
-    Move-Item -Path $filePath -Destination $quarantinePath -Force -ErrorAction Stop
-    Write-Log "Quarantined file: $filePath to $quarantinePath"
-}
-
-# Stop Processes Using DLL
-function Stop-ProcessUsingDLL {
-    param ([string]$filePath)
-    $processes = Get-Process | Where-Object { ($_.Modules | Where-Object { $_.FileName -eq $filePath }) }
-    foreach ($process in $processes) {
-        Stop-Process -Id $process.Id -Force -ErrorAction Stop
-        Write-Log "Stopped process $($process.Name) (PID: $($process.Id)) using $filePath"
+    try {
+        $quarantinePath = Join-Path -Path $quarantineFolder -ChildPath (Split-Path $filePath -Leaf)
+        Move-Item -Path $filePath -Destination $quarantinePath -Force -ErrorAction Stop
+        Write-Log "Quarantined file: $filePath to $quarantinePath"
+    } catch {
+        Write-Log "Failed to quarantine ${filePath}: $($_.Exception.Message)"
     }
 }
 
-# Remove Unsigned DLLs
+# Stop Processes Using DLL (Aggressive)
+function Stop-ProcessUsingDLL {
+    param ([string]$filePath)
+    try {
+        $processes = Get-Process | Where-Object { ($_.Modules | Where-Object { $_.FileName -eq $filePath }) }
+        foreach ($process in $processes) {
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            Write-Log "Stopped process $($process.Name) (PID: $($process.Id)) using $filePath"
+        }
+    } catch {
+        Write-Log "Error stopping processes for ${filePath}: $($_.Exception.Message)"
+        try {
+            $processes = Get-Process | Where-Object { ($_.Modules | Where-Object { $_.FileName -eq $filePath }) }
+            foreach ($process in $processes) {
+                taskkill /PID $process.Id /F | Out-Null
+                Write-Log "Force-killed process $($process.Name) (PID: $($process.Id)) using taskkill"
+            }
+        } catch {
+            Write-Log "Fallback process kill failed for ${filePath}: $($_.Exception.Message)"
+        }
+    }
+}
+
+# Remove Unsigned DLLs (Exclude Problem Folders)
 function Remove-UnsignedDLLs {
     Write-Log "Starting unsigned DLL scan."
     $drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -in (2, 3, 4) }
     foreach ($drive in $drives) {
         $root = $drive.DeviceID + "\"
         Write-Log "Scanning drive: $root"
-        $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -ErrorAction SilentlyContinue
-        foreach ($dll in $dllFiles) {
-            $fileHash = Calculate-FileHash -filePath $dll.FullName
-            if ($fileHash) {
-                if ($scannedFiles.ContainsKey($fileHash.Hash)) {
-                    Write-Log "Skipping already scanned file: $($dll.FullName) (Hash: $($fileHash.Hash))"
-                    if (-not $scannedFiles[$fileHash.Hash]) {
-                        if (Set-FileOwnershipAndPermissions -filePath $dll.FullName) {
-                            Stop-ProcessUsingDLL -filePath $dll.FullName
-                            Quarantine-File -filePath $dll.FullName
+        try {
+            $dllFiles = Get-ChildItem -Path $root -Filter *.dll -Recurse -File -Exclude @($quarantineFolder, "C:\Windows\System32\config") -ErrorAction Stop
+            foreach ($dll in $dllFiles) {
+                try {
+                    $fileHash = Calculate-FileHash -filePath $dll.FullName
+                    if ($fileHash) {
+                        if ($scannedFiles.ContainsKey($fileHash.Hash)) {
+                            Write-Log "Skipping already scanned file: $($dll.FullName) (Hash: $($fileHash.Hash))"
+                            if (-not $scannedFiles[$fileHash.Hash]) {
+                                if (Set-FileOwnershipAndPermissions -filePath $dll.FullName) {
+                                    Stop-ProcessUsingDLL -filePath $dll.FullName
+                                    Quarantine-File -filePath $dll.FullName
+                                }
+                            }
+                        } else {
+                            $isValid = $fileHash.Status -eq "Valid" # Only "Valid" is safe
+                            $scannedFiles[$fileHash.Hash] = $isValid
+                            "$($fileHash.Hash),$isValid" | Out-File -FilePath $localDatabase -Append -Encoding UTF8 -ErrorAction Stop
+                            Write-Log "Scanned new file: $($dll.FullName) (Valid: $isValid)"
+                            if (-not $isValid) {
+                                if (Set-FileOwnershipAndPermissions -filePath $dll.FullName) {
+                                    Stop-ProcessUsingDLL -filePath $dll.FullName
+                                    Quarantine-File -filePath $dll.FullName
+                                }
+                            }
                         }
                     }
-                } else {
-                    $isValid = $fileHash.Status -eq 'Valid'
-                    $scannedFiles[$fileHash.Hash] = $isValid
-                    "$($fileHash.Hash),$isValid" | Out-File -FilePath $localDatabase -Append -Encoding UTF8
-                    Write-Log "Scanned new file: $($dll.FullName) (Valid: $isValid)"
-                    if (-not $isValid) {
-                        if (Set-FileOwnershipAndPermissions -filePath $dll.FullName) {
-                            Stop-ProcessUsingDLL -filePath $dll.FullName
-                            Quarantine-File -filePath $dll.FullName
+                } catch {
+                    Write-Log "Error processing file $($dll.FullName): $($_.Exception.Message)"
+                }
+            }
+        } catch {
+            Write-Log "Scan failed for drive ${root} $($_.Exception.Message)"
+        }
+    }
+    # Explicit System32 Scan
+    Write-Log "Starting explicit System32 scan."
+    try {
+        $system32Files = Get-ChildItem -Path "C:\Windows\System32" -Filter *.dll -File -ErrorAction Stop
+        foreach ($dll in $system32Files) {
+            try {
+                $fileHash = Calculate-FileHash -filePath $dll.FullName
+                if ($fileHash) {
+                    if ($scannedFiles.ContainsKey($fileHash.Hash)) {
+                        Write-Log "Skipping already scanned System32 file: $($dll.FullName) (Hash: $($fileHash.Hash))"
+                        if (-not $scannedFiles[$fileHash.Hash]) {
+                            if (Set-FileOwnershipAndPermissions -filePath $dll.FullName) {
+                                Stop-ProcessUsingDLL -filePath $dll.FullName
+                                Quarantine-File -filePath $dll.FullName
+                            }
+                        }
+                    } else {
+                        $isValid = $fileHash.Status -eq "Valid"
+                        $scannedFiles[$fileHash.Hash] = $isValid
+                        "$($fileHash.Hash),$isValid" | Out-File -FilePath $localDatabase -Append -Encoding UTF8 -ErrorAction Stop
+                        Write-Log "Scanned new System32 file: $($dll.FullName) (Valid: $isValid)"
+                        if (-not $isValid) {
+                            if (Set-FileOwnershipAndPermissions -filePath $dll.FullName) {
+                                Stop-ProcessUsingDLL -filePath $dll.FullName
+                                Quarantine-File -filePath $dll.FullName
+                            }
                         }
                     }
                 }
+            } catch {
+                Write-Log "Error processing System32 file $($dll.FullName): $($_.Exception.Message)"
             }
         }
+    } catch {
+        Write-Log "System32 scan failed: $($_.Exception.Message)"
     }
 }
 
-# File System Watcher
+# File System Watcher (Throttled and Crash-Proof)
 $drives = Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -in (2, 3, 4) }
 foreach ($drive in $drives) {
     $monitorPath = $drive.DeviceID + "\"
-    $fileWatcher = New-Object System.IO.FileSystemWatcher
-    $fileWatcher.Path = $monitorPath
-    $fileWatcher.Filter = "*.dll"
-    $fileWatcher.IncludeSubdirectories = $true
-    $fileWatcher.EnableRaisingEvents = $true
+    try {
+        $fileWatcher = New-Object System.IO.FileSystemWatcher
+        $fileWatcher.Path = $monitorPath
+        $fileWatcher.Filter = "*.dll"
+        $fileWatcher.IncludeSubdirectories = $true
+        $fileWatcher.EnableRaisingEvents = $true
+        $fileWatcher.NotifyFilter = [System.IO.NotifyFilters]::FileName -bor [System.IO.NotifyFilters]::LastWrite
 
-    $action = {
-        param($sender, $e)
-        if ($e.ChangeType -in "Created", "Changed") {
-            Write-Log "Detected file change: $($e.FullPath)"
-            $fileHash = Calculate-FileHash -filePath $e.FullPath
-            if ($fileHash) {
-                if ($scannedFiles.ContainsKey($fileHash.Hash)) {
-                    Write-Log "Skipping already scanned file: $($e.FullPath) (Hash: $($fileHash.Hash))"
-                    if (-not $scannedFiles[$fileHash.Hash]) {
-                        if (Set-FileOwnershipAndPermissions -filePath $e.FullPath) {
-                            Stop-ProcessUsingDLL -filePath $e.FullPath
-                            Quarantine-File -filePath $e.FullPath
+        $action = {
+            param($sender, $e)
+            try {
+                if ($e.ChangeType -in "Created", "Changed" -and $e.FullPath -notlike "$quarantineFolder*") {
+                    Write-Log "Detected file change: $($e.FullPath)"
+                    $fileHash = Calculate-FileHash -filePath $e.FullPath
+                    if ($fileHash) {
+                        if ($scannedFiles.ContainsKey($fileHash.Hash)) {
+                            Write-Log "Skipping already scanned file: $($e.FullPath) (Hash: $($fileHash.Hash))"
+                            if (-not $scannedFiles[$fileHash.Hash]) {
+                                if (Set-FileOwnershipAndPermissions -filePath $e.FullPath) {
+                                    Stop-ProcessUsingDLL -filePath $e.FullPath
+                                    Quarantine-File -filePath $e.FullPath
+                                }
+                            }
+                        } else {
+                            $isValid = $fileHash.Status -eq "Valid"
+                            $scannedFiles[$fileHash.Hash] = $isValid
+                            "$($fileHash.Hash),$isValid" | Out-File -FilePath $localDatabase -Append -Encoding UTF8 -ErrorAction Stop
+                            Write-Log "Added new file to database: $($e.FullPath) (Valid: $isValid)"
+                            if (-not $isValid) {
+                                if (Set-FileOwnershipAndPermissions -filePath $e.FullPath) {
+                                    Stop-ProcessUsingDLL -filePath $e.FullPath
+                                    Quarantine-File -filePath $e.FullPath
+                                }
+                            }
                         }
                     }
-                } else {
-                    $isValid = $fileHash.Status -eq 'Valid'
-                    $scannedFiles[$fileHash.Hash] = $isValid
-                    "$($fileHash.Hash),$isValid" | Out-File -FilePath $localDatabase -Append -Encoding UTF8 -ErrorAction Stop
-                    Write-Log "Added new file to database: $($e.FullPath) (Valid: $isValid)"
-                    if (-not $isValid) {
-                        if (Set-FileOwnershipAndPermissions -filePath $e.FullPath) {
-                            Stop-ProcessUsingDLL -filePath $e.FullPath
-                            Quarantine-File -filePath $e.FullPath
-                        }
-                    }
+                    Start-Sleep -Milliseconds 500 # Throttle to prevent event flood
                 }
+            } catch {
+                Write-Log "Watcher error for $($e.FullPath): $($_.Exception.Message)"
             }
         }
-    }
 
-    Register-ObjectEvent -InputObject $fileWatcher -EventName Created -Action $action
-    Register-ObjectEvent -InputObject $fileWatcher -EventName Changed -Action $action
+        Register-ObjectEvent -InputObject $fileWatcher -EventName Created -Action $action -ErrorAction Stop
+        Register-ObjectEvent -InputObject $fileWatcher -EventName Changed -Action $action -ErrorAction Stop
+        Write-Log "FileSystemWatcher set up for $monitorPath"
+    } catch {
+        Write-Log "Failed to set up watcher for ${monitorPath} $($_.Exception.Message)"
+    }
 }
 
 # Initial scan
 Remove-UnsignedDLLs
 Write-Log "Initial scan completed. Monitoring started."
 
-# Keep script running
+# Keep script running with crash protection
 Write-Host "Antivirus running. Press [Ctrl] + [C] to stop."
-while ($true) { Start-Sleep -Seconds 10 }
+try {
+    while ($true) { Start-Sleep -Seconds 10 }
+} catch {
+    Write-Log "Main loop crashed: $($_.Exception.Message)"
+    Write-Host "Script crashed. Check $logFile for details."
+}
