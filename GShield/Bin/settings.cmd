@@ -1,10 +1,15 @@
 @echo off
 
+:: Install RamCleaner
+mkdir %windir%\Setup\Scripts
+copy /y emptystandbylist.exe %windir%\Setup\Scripts\emptystandbylist.exe
+copy /y RamCleaner.bat %windir%\Setup\Scripts\RamCleaner.bat
+schtasks /create /tn "RamCleaner" /xml "RamCleaner.xml" /ru "SYSTEM"
+
 :: Remove default user
 net user defaultuser0 /delete
 net user defaultuser1 /delete
 net user defaultuser100000 /delete
-
 
 :: Riddance
 for /f "tokens=1,2*" %%x in ('whoami /user /fo list ^| findstr /i "name sid"') do (
