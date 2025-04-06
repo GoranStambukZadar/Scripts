@@ -1,5 +1,8 @@
 @echo off
 
+:: Import security policy
+lgpo /s secpol.inf
+
 :: Install RamCleaner
 mkdir %windir%\Setup\Scripts
 copy /y emptystandbylist.exe %windir%\Setup\Scripts\emptystandbylist.exe
