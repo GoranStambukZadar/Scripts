@@ -90,8 +90,8 @@ function Set-FileOwnershipAndPermissions {
     param ([string]$filePath)
     try {
         takeown /F $filePath /A | Out-Null
-        icacls $filePath /reset | Out-Null
-        icacls $filePath /grant "Administrators:F" /inheritance:d | Out-Null
+        icacls $filePath /inheritance:d | Out-Null
+        icacls $filePath /grant "Administrators:F" | Out-Null
         Write-Log "Forcibly set ownership and permissions for $filePath"
         return $true
     } catch {
