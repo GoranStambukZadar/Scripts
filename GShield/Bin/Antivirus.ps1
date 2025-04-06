@@ -144,44 +144,49 @@ function Quarantine-File {
 # Stop Processes Using DLL (Aggressive)
 function Stop-ProcessUsingDLL {
     param ([string]$filePath)
+    
+    # First attempt: Try to kill processes using the DLL via module check
     try {
-        # First, try to kill any process using the DLL via module check
         $processes = Get-Process | Where-Object { ($_.Modules | Where-Object { $_.FileName -eq $filePath }) }
-        foreach ($process in $processes) {
-            Stop-Process -Id $process.Id -Force -ErrorAction Stop
-            Write-Log "Stopped process $($process.Name) (PID: $($process.Id)) using $filePath"
+        if ($processes) {
+            foreach ($process in $processes) {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                Write-Log "Stopped process $($process.Name) (PID: $($process.Id)) using $filePath"
+            }
+            # Check if file is free after first attempt
+            [System.IO.File]::Open($filePath, 'Open', 'ReadWrite', 'None').Close()
+            Write-Log "File $filePath is now free after initial attempt"
+            return
+        } else {
+            Write-Log "No processes found using $filePath in initial module check"
         }
     } catch {
         Write-Log "Module-based process stop failed for ${filePath}: $($_.Exception.Message)"
     }
 
-    # Explicitly target explorer.exe since it's a common culprit
-    try {
-        $explorer = Get-Process -Name "explorer" -ErrorAction SilentlyContinue
-        if ($explorer) {
-            Stop-Process -Name "explorer" -Force -ErrorAction Stop
-            Write-Log "Force-stopped explorer.exe (PID: $($explorer.Id)) potentially using $filePath"
-            Start-Sleep -Milliseconds 500  # Give it a moment to release the handle
-        }
-    } catch {
-        Write-Log "Failed to stop explorer.exe for ${filePath}: $($_.Exception.Message)"
-    }
-
-    # Fallback: Use taskkill for any remaining locks
+    # Second attempt: If first fails, try to identify and kill parent process
     try {
         $processes = Get-Process | Where-Object { ($_.Modules | Where-Object { $_.FileName -eq $filePath }) }
         foreach ($process in $processes) {
-            taskkill /PID $process.Id /F | Out-Null
-            Write-Log "Force-killed process $($process.Name) (PID: $($process.Id)) using taskkill"
+            $parentProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($process.Id)" | 
+                           Select-Object -ExpandProperty ParentProcessId
+            if ($parentProcess) {
+                $parentProc = Get-Process -Id $parentProcess -ErrorAction SilentlyContinue
+                if ($parentProc) {
+                    taskkill /F /IM $parentProc.Name | Out-Null
+                    Write-Log "Force-killed parent process $($parentProc.Name) (PID: $parentProcess) using taskkill"
+                    Start-Sleep -Milliseconds 500  # Brief pause to release handles
+                }
+            }
         }
     } catch {
-        Write-Log "Taskkill fallback failed for ${filePath}: $($_.Exception.Message)"
+        Write-Log "Parent process kill failed for ${filePath}: $($_.Exception.Message)"
     }
 
-    # Final check: If file is still locked, log it
+    # Final check: Verify if file is free
     try {
         [System.IO.File]::Open($filePath, 'Open', 'ReadWrite', 'None').Close()
-        Write-Log "File $filePath is now free"
+        Write-Log "File $filePath is now free after all attempts"
     } catch {
         Write-Log "File $filePath still locked after all attempts: $($_.Exception.Message)"
     }
