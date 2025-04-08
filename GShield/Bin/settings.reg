@@ -3003,6 +3003,8 @@ B4,34,D0,DA,C7,A5,DB,01,00,00,00,00,00,00,00,00,00,00,00,00,02,00,00,00
 [HKEY_LOCAL_MACHINE\SOFTWARE\Classes\DesktopBackground\Shell\Firewall\shell\Command007\Command]
 @="explorer.exe windowsdefender:"
 
+; Restrictions
+
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions]
 "DenyDeviceIDs"=dword:00000001
 "DenyDeviceIDsRetroactive"=dword:00000001
