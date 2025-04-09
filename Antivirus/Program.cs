@@ -1,408 +1,403 @@
+// Program.cs
 using System;
-using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
-using System.Security.Principal;
-using System.Security.Cryptography.X509Certificates;
-using System.Threading;
-using System.Windows.Forms;
-using System.Collections.Generic;
-using System.Reflection;
-using System.Management;
-using System.Drawing;
-using System.Runtime.InteropServices;
 using System.Linq;
+using System.Diagnostics;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Management;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Net.Http;
+using System.Net;
+using System.Windows.Forms;
+using System.Drawing;
+using System.Reflection;
 
 class Program
 {
-    static readonly string baseFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GorstakAV");
-    static readonly string logFile = Path.Combine(baseFolder, "antivirus_log.txt");
-    static readonly string quarantineFolder = Path.Combine(baseFolder, "Quarantine");
-    static readonly string localDatabase = Path.Combine(baseFolder, "local_database.txt");
-    static Dictionary<string, bool> scannedFiles = new();
-    static DateTime lastEventTime = DateTime.MinValue;
-    static int minIntervalMs = 500;
+    private static NotifyIcon? trayIcon;
+    private static bool realTimeProtectionEnabled = true;
+    private static readonly string logFile = @"C:\antivirus_log.txt";
+
+    [STAThread]
+    static void Main(string[] args)
+    {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+
+        // Set up the tray icon and context menu
+        ContextMenuStrip contextMenu = new ContextMenuStrip();
+        contextMenu.Items.Add("Toggle Real-Time Protection", null, (s, e) => ToggleRealtimeProtection());
+        contextMenu.Items.Add("View Log", null, (s, e) => Process.Start("notepad.exe", logFile));
+        contextMenu.Items.Add("View Quarantine Folder", null, (s, e) => Process.Start("explorer.exe", AntivirusEngine.quarantineFolder));
+        contextMenu.Items.Add("Exit", null, (s, e) => Application.Exit());
+
+        Icon trayIconImage = SystemIcons.Application; // Default fallback icon
+        try
+        {
+            var resourceName = "Antivirus.Autorun.ico"; // Matches your RootNamespace
+            var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
+            if (stream != null)
+            {
+                trayIconImage = new Icon(stream);
+                WriteLog("[INFO] Custom tray icon loaded successfully.");
+            }
+            else
+            {
+                WriteLog($"[WARNING] Embedded icon '{resourceName}' not found. Using default icon.");
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteLog($"[ERROR] Failed to load tray icon: {ex.Message}");
+        }
+
+        trayIcon = new NotifyIcon()
+        {
+            Icon = trayIconImage,
+            Text = "GorstakAV Antivirus",
+            Visible = true,
+            ContextMenuStrip = contextMenu
+        };
+
+        // Start the antivirus engine
+        WriteLog("[INFO] Starting GorstakAV Antivirus Engine...");
+        AntivirusEngine.Start();
+        trayIcon.ShowBalloonTip(3000, "GorstakAV", "Antivirus engine started.", ToolTipIcon.Info);
+
+        // Run the application
+        Application.Run();
+    }
+
+    private static void ToggleRealtimeProtection()
+    {
+        realTimeProtectionEnabled = !realTimeProtectionEnabled;
+        string status = realTimeProtectionEnabled ? "enabled" : "disabled";
+        trayIcon!.Text = $"GorstakAV Antivirus ({status})";
+        trayIcon.ShowBalloonTip(1000, "GorstakAV", $"Real-time protection {status}.", ToolTipIcon.Info);
+        AntivirusEngine.SetRealTimeProtection(realTimeProtectionEnabled);
+        WriteLog($"[INFO] Real-time protection {status}.");
+    }
+
+    public static void WriteLog(string message) // Changed to public static
+    {
+        try
+        {
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            File.AppendAllText(logFile, $"{timestamp} {message}\n");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] Failed to write to log: {ex.Message}");
+        }
+    }
+}
+
+public class AntivirusEngine
+{
+    public static readonly string baseFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GorstakAV");
+    public static readonly string quarantineFolder = Path.Combine(baseFolder, "Quarantine");
+    private static readonly string localDatabase = Path.Combine(baseFolder, "local_database.dat");
+    private static Dictionary<string, (bool Valid, bool FromVT)> scannedFiles = new();
+    private static DateTime lastEventTime = DateTime.MinValue;
+    private static readonly int minIntervalMs = 500;
+    private static readonly byte[] dbKey = SHA256.HashData(Encoding.UTF8.GetBytes("some-super-secret-key"));
+    private static List<FileSystemWatcher> watchers = new List<FileSystemWatcher>();
+    private static bool realTimeProtectionEnabled = true;
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, MoveFileFlags dwFlags);
+    private static extern bool MoveFileEx(string lpExistingFileName, string? lpNewFileName, MoveFileFlags dwFlags);
 
     [Flags]
-    enum MoveFileFlags
+    private enum MoveFileFlags
     {
         MOVEFILE_REPLACE_EXISTING = 0x00000001,
         MOVEFILE_DELAY_UNTIL_REBOOT = 0x00000004
     }
 
-    [STAThread]
-    static void Main()
+    public static void Start()
     {
-        EnsureScheduledTask();
-
         Directory.CreateDirectory(baseFolder);
         Directory.CreateDirectory(quarantineFolder);
+        LoadDatabase();
+        SetupFileWatchers();
+    }
 
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-
-        ContextMenuStrip contextMenu = new ContextMenuStrip();
-        contextMenu.Items.Add("Toggle Real-Time Protection", null, (s, e) => ToggleRealtimeProtection());
-        contextMenu.Items.Add("View Log", null, (s, e) => Process.Start("notepad.exe", logFile));
-        contextMenu.Items.Add("Open Quarantine Folder", null, (s, e) => Process.Start("explorer.exe", quarantineFolder));
-        contextMenu.Items.Add("Exit", null, (s, e) => Application.Exit());
-
-        string? iconName = Array.Find(
-            Assembly.GetExecutingAssembly().GetManifestResourceNames(),
-            name => name.EndsWith("Autorun.ico")
-        );
-
-        if (iconName == null)
+    public static void SetRealTimeProtection(bool enabled)
+    {
+        realTimeProtectionEnabled = enabled;
+        foreach (var watcher in watchers)
         {
-            MessageBox.Show("Tray icon resource not found.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            watcher.EnableRaisingEvents = enabled;
         }
+    }
 
-        using Stream? iconStream = Assembly.GetExecutingAssembly().GetManifestResourceStream(iconName);
-        if (iconStream == null)
-        {
-            MessageBox.Show($"Failed to load tray icon resource '{iconName}'. Available resources: \n" + string.Join("\n", Assembly.GetExecutingAssembly().GetManifestResourceNames()), "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        NotifyIcon trayIcon = new NotifyIcon()
-        {
-            Icon = new Icon(iconStream),
-            Text = "Simple Antivirus by Gorstak",
-            Visible = true,
-            ContextMenuStrip = contextMenu
-        };
-
-        WriteLog("Antivirus started.");
-
+    private static void SetupFileWatchers()
+    {
         foreach (var drive in DriveInfo.GetDrives())
         {
-            if (drive.IsReady && (drive.DriveType == DriveType.Fixed || drive.DriveType == DriveType.Removable || drive.DriveType == DriveType.Network))
-            {
-                try
-                {
-                    FileSystemWatcher watcher = new FileSystemWatcher(drive.RootDirectory.FullName)
-                    {
-                        Filter = "*.dll",
-                        IncludeSubdirectories = true,
-                        EnableRaisingEvents = true
-                    };
-
-                    watcher.Changed += OnChanged;
-                    watcher.Created += OnChanged;
-
-                    WriteLog($"Watching drive: {drive.Name}");
-                }
-                catch (Exception ex)
-                {
-                    WriteLog($"Failed to watch drive {drive.Name}: {ex.Message}");
-                }
-            }
-        }
-
-        Application.Run();
-    }
-
-    static bool realtimeProtectionEnabled = true;
-
-    static void ToggleRealtimeProtection()
-    {
-        realtimeProtectionEnabled = !realtimeProtectionEnabled;
-        WriteLog($"Real-Time Protection {(realtimeProtectionEnabled ? "Enabled" : "Disabled")}");
-    }
-
-    static void OnChanged(object sender, FileSystemEventArgs e)
-    {
-        if (!realtimeProtectionEnabled) return;
-        if ((DateTime.Now - lastEventTime).TotalMilliseconds < minIntervalMs) return;
-        lastEventTime = DateTime.Now;
-
-        WriteLog($"DLL Change Detected: {e.FullPath}");
-        if (!File.Exists(e.FullPath)) return;
-
-        var hashInfo = CalculateFileHash(e.FullPath);
-        if (hashInfo == null) return;
-
-        if (scannedFiles.ContainsKey(hashInfo.Value.Hash))
-        {
-            if (!scannedFiles[hashInfo.Value.Hash])
-            {
-                KillProcessesUsingFile(e.FullPath);
-                QuarantineFile(e.FullPath);
-            }
-            return;
-        }
-
-        scannedFiles[hashInfo.Value.Hash] = hashInfo.Value.Valid;
-        File.AppendAllText(localDatabase, $"{hashInfo.Value.Hash},{hashInfo.Value.Valid}\n");
-
-        if (!hashInfo.Value.Valid)
-        {
-            KillProcessesUsingFile(e.FullPath);
-            QuarantineFile(e.FullPath);
-        }
-    }
-
-    static (string Hash, bool Valid)? CalculateFileHash(string filePath)
-    {
-        for (int attempt = 0; attempt < 3; attempt++)
-        {
+            if (!drive.IsReady) continue;
             try
             {
-                bool valid = false;
-                try
+                FileSystemWatcher watcher = new(drive.RootDirectory.FullName)
                 {
-                    var cert = X509Certificate.CreateFromSignedFile(filePath);
-                    if (cert != null)
-                    {
-                        var cert2 = new X509Certificate2(cert);
-                        var chain = new X509Chain();
-                        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-                        valid = chain.Build(cert2);
+                    Filter = "*.*",
+                    IncludeSubdirectories = true,
+                    EnableRaisingEvents = true
+                };
 
-                        if (!valid)
-                        {
-                            WriteLog($"Certificate chain validation failed for {filePath}: {string.Join(", ", chain.ChainStatus.Select(s => s.Status))}");
-                        }
-                    }
-                    else
-                    {
-                        WriteLog($"No valid certificate found for {filePath}");
-                    }
-                }
-                catch (CryptographicException cryptoEx)
-                {
-                    WriteLog($"Cryptographic error validating signature for {filePath}: {cryptoEx.Message}");
-                    valid = false;
-                }
-
-                using var sha256 = SHA256.Create();
-                using var stream = File.OpenRead(filePath);
-                string hash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "").ToLower();
-
-                WriteLog($"Signature for {filePath}: {(valid ? "Valid" : "Invalid")} (AGGRESSIVE MODE)");
-                return (hash, valid);
-            }
-            catch (IOException ioEx)
-            {
-                WriteLog($"[Attempt {attempt + 1}] IO Error reading {filePath}: {ioEx.Message}");
-                Thread.Sleep(500);
+                watcher.Created += OnFileEvent;
+                watcher.Changed += OnFileEvent;
+                watchers.Add(watcher);
             }
             catch (Exception ex)
             {
-                WriteLog($"[Attempt {attempt + 1}] Error hashing {filePath}: {ex.Message}");
-                Thread.Sleep(500);
+                Program.WriteLog($"[ERROR] Failed to set up watcher for {drive.Name}: {ex.Message}");
             }
         }
-
-        WriteLog($"Failed to hash or validate signature for {filePath} after multiple attempts.");
-        return null;
     }
 
-    static void KillProcessesUsingFile(string filePath)
+    private static void OnFileEvent(object sender, FileSystemEventArgs e)
+    {
+        if (!realTimeProtectionEnabled) return;
+        if ((DateTime.Now - lastEventTime).TotalMilliseconds < minIntervalMs) return;
+        lastEventTime = DateTime.Now;
+
+        if (!File.Exists(e.FullPath)) return;
+
+        string ext = Path.GetExtension(e.FullPath).ToLower();
+        if (ext == ".dll")
+        {
+            ScanDll(e.FullPath);
+        }
+        else
+        {
+            _ = ScanWithVirusTotal(e.FullPath);
+        }
+    }
+
+    private static void ScanDll(string path)
+    {
+        var hashInfo = CalculateFileHash(path);
+        if (hashInfo == null)
+        {
+            Program.WriteLog($"[WARNING] Failed to calculate hash for {path}");
+            return;
+        }
+
+        Program.WriteLog($"[INFO] Scanning DLL: {path}, Hash: {hashInfo.Value.Hash}");
+
+        if (scannedFiles.TryGetValue(hashInfo.Value.Hash, out var cached) && !cached.Valid)
+        {
+            KillProcessesUsingFile(path);
+            QuarantineFile(path);
+            return;
+        }
+
+        if (!hashInfo.Value.Valid)
+        {
+            scannedFiles[hashInfo.Value.Hash] = (false, false);
+            KillProcessesUsingFile(path);
+            QuarantineFile(path);
+            SaveDatabase();
+            Program.WriteLog($"[ALERT] Invalid DLL detected and quarantined: {path}");
+        }
+        else
+        {
+            scannedFiles[hashInfo.Value.Hash] = (true, false);
+            SaveDatabase();
+            Program.WriteLog($"[INFO] DLL verified as valid: {path}");
+        }
+    }
+
+    private static (string Hash, bool Valid)? CalculateFileHash(string filePath)
     {
         try
         {
-            foreach (var process in Process.GetProcesses())
+            using var sha256 = SHA256.Create();
+            using var stream = File.OpenRead(filePath);
+            string hash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "").ToLower();
+            bool valid = false;
+            try
             {
-                try
+                var cert = X509CertificateLoader.LoadCertificateFromFile(filePath);
+                if (cert != null)
                 {
-                    foreach (ProcessModule module in process.Modules)
-                    {
-                        if (string.Equals(module.FileName, filePath, StringComparison.OrdinalIgnoreCase))
-                        {
-                            WriteLog($"Killing process {process.ProcessName} (PID {process.Id}) using {filePath}");
-                            try
-                            {
-                                Process parent = GetParentProcess(process);
-                                if (parent != null)
-                                {
-                                    WriteLog($"Also killing parent process {parent.ProcessName} (PID {parent.Id})");
-                                    parent.Kill();
-                                    parent.WaitForExit(2000);
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                WriteLog($"Error getting parent process: {ex.Message}");
-                            }
+                    var chain = new X509Chain();
+                    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                    valid = chain.Build(new X509Certificate2(cert));
+                }
+            }
+            catch { }
+            return (hash, valid);
+        }
+        catch (Exception ex)
+        {
+            Program.WriteLog($"[ERROR] Error calculating hash for {filePath}: {ex.Message}");
+            return null;
+        }
+    }
 
-                            process.Kill();
-                            process.WaitForExit(2000);
-                            break;
+    private static async Task ScanWithVirusTotal(string filePath)
+    {
+        var hashInfo = CalculateFileHash(filePath);
+        if (hashInfo == null) return;
+        if (scannedFiles.ContainsKey(hashInfo.Value.Hash)) return;
+
+        Program.WriteLog($"[INFO] Scanning with VirusTotal: {filePath}, Hash: {hashInfo.Value.Hash}");
+        bool flagged = await VirusTotalAPI.CheckFileAsync(hashInfo.Value.Hash, filePath);
+        scannedFiles[hashInfo.Value.Hash] = (!flagged, true);
+        SaveDatabase();
+
+        if (flagged)
+        {
+            QuarantineFile(filePath);
+            Program.WriteLog($"[ALERT] File flagged by VirusTotal and quarantined: {filePath}");
+        }
+        else
+        {
+            Program.WriteLog($"[INFO] File cleared by VirusTotal: {filePath}");
+        }
+    }
+
+    private static void KillProcessesUsingFile(string filePath)
+    {
+        foreach (var proc in Process.GetProcesses())
+        {
+            try
+            {
+                foreach (ProcessModule module in proc.Modules)
+                {
+                    if (string.Equals(module.FileName, filePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            proc.Kill();
+                            Program.WriteLog($"[INFO] Killed process using {filePath}: {proc.ProcessName}");
                         }
+                        catch (Exception ex)
+                        {
+                            Program.WriteLog($"[ERROR] Failed to kill process using {filePath}: {ex.Message}");
+                        }
+                        break;
                     }
                 }
-                catch { }
             }
-
-            if (File.Exists(filePath))
-            {
-                TakeFileOwnership(filePath);
-            }
-        }
-        catch (Exception ex)
-        {
-            WriteLog($"Failed to kill process using {filePath}: {ex.Message}");
+            catch { }
         }
     }
 
-    static Process GetParentProcess(Process process)
-    {
-        try
-        {
-            using (var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Process WHERE ProcessId = " + process.Id))
-            {
-                foreach (var obj in searcher.Get())
-                {
-                    int parentPid = Convert.ToInt32(obj["ParentProcessId"]);
-                    return Process.GetProcessById(parentPid);
-                }
-            }
-        }
-        catch { }
-        return null;
-    }
-
-    static void TakeFileOwnership(string filePath)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo("cmd.exe", $"/c takeown /f \"{filePath}\" && icacls \"{filePath}\" /grant Administrators:F")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }).WaitForExit();
-        }
-        catch (Exception ex)
-        {
-            WriteLog($"Failed to take ownership of {filePath}: {ex.Message}");
-        }
-    }
-
-    static void QuarantineFile(string filePath)
+    private static void QuarantineFile(string filePath)
     {
         try
         {
             string dest = Path.Combine(quarantineFolder, Path.GetFileName(filePath));
-            for (int attempt = 0; attempt < 3; attempt++)
-            {
-                try
-                {
-                    File.Move(filePath, dest);
-                    WriteLog($"Quarantined {filePath} to {dest}");
-                    return;
-                }
-                catch (IOException ex)
-                {
-                    WriteLog($"[Attempt {attempt + 1}] Failed to move {filePath} to quarantine: {ex.Message}");
-                    Thread.Sleep(1000);
-                    if (attempt == 2)
-                    {
-                        TakeFileOwnership(filePath);
-                        try
-                        {
-                            File.Move(filePath, dest);
-                            WriteLog($"Quarantined {filePath} to {dest} after taking ownership");
-                            return;
-                        }
-                        catch
-                        {
-                            if (ScheduleFileDeletionOnReboot(filePath))
-                            {
-                                WriteLog($"Scheduled {filePath} for deletion on reboot");
-                            }
-                            else
-                            {
-                                WriteLog($"Failed to schedule {filePath} for deletion on reboot");
-                            }
-                        }
-                    }
-                }
-            }
+            File.Move(filePath, dest);
+            Program.WriteLog($"[INFO] File moved to quarantine: {filePath} -> {dest}");
         }
-        catch (Exception ex)
+        catch
         {
-            WriteLog($"Failed to quarantine {filePath} after retries: {ex.Message}");
-            if (ScheduleFileDeletionOnReboot(filePath))
+            TakeFileOwnership(filePath);
+            if (!MoveFileEx(filePath, null, MoveFileFlags.MOVEFILE_DELAY_UNTIL_REBOOT))
             {
-                WriteLog($"Scheduled {filePath} for deletion on reboot as final fallback");
+                Program.WriteLog($"[ERROR] Failed to quarantine {filePath}, scheduled for deletion on reboot.");
             }
             else
             {
-                WriteLog($"Failed to schedule {filePath} for deletion on reboot as final fallback");
+                Program.WriteLog($"[INFO] File {filePath} scheduled for deletion on reboot.");
             }
         }
     }
 
-    static bool ScheduleFileDeletionOnReboot(string filePath)
+    private static void TakeFileOwnership(string filePath)
     {
         try
         {
-            bool success = MoveFileEx(filePath, null, MoveFileFlags.MOVEFILE_DELAY_UNTIL_REBOOT);
-            if (!success)
+            Process.Start(new ProcessStartInfo("takeown", $"/f \"{filePath}\"") { CreateNoWindow = true, UseShellExecute = false });
+            Process.Start(new ProcessStartInfo("icacls", $"\"{filePath}\" /grant Administrators:F") { CreateNoWindow = true, UseShellExecute = false });
+            Program.WriteLog($"[INFO] Took ownership of {filePath}");
+        }
+        catch (Exception ex)
+        {
+            Program.WriteLog($"[ERROR] Failed to take ownership of {filePath}: {ex.Message}");
+        }
+    }
+
+    private static void LoadDatabase()
+    {
+        try
+        {
+            if (!File.Exists(localDatabase)) return;
+            var lines = File.ReadAllBytes(localDatabase);
+            string decrypted = Encoding.UTF8.GetString(ProtectedData.Unprotect(lines, dbKey, DataProtectionScope.CurrentUser));
+            foreach (var line in decrypted.Split('\n'))
             {
-                int error = Marshal.GetLastWin32Error();
-                WriteLog($"MoveFileEx failed for {filePath} with error code {error}");
+                var parts = line.Split(',');
+                if (parts.Length == 3)
+                    scannedFiles[parts[0]] = (bool.Parse(parts[1]), bool.Parse(parts[2]));
             }
-            return success;
+            Program.WriteLog("[INFO] Local database loaded successfully.");
         }
         catch (Exception ex)
         {
-            WriteLog($"Exception while scheduling {filePath} for reboot deletion: {ex.Message}");
-            return false;
+            Program.WriteLog($"[ERROR] Failed to load local database: {ex.Message}");
         }
     }
 
-    static void WriteLog(string message)
+    private static void SaveDatabase()
     {
-        string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        string entry = $"[{timestamp}] {message}";
-        Console.WriteLine(entry);
         try
         {
-            File.AppendAllText(logFile, entry + Environment.NewLine);
+            var sb = new StringBuilder();
+            foreach (var kvp in scannedFiles)
+                sb.AppendLine($"{kvp.Key},{kvp.Value.Valid},{kvp.Value.FromVT}");
+            byte[] encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(sb.ToString()), dbKey, DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(localDatabase, encrypted);
+            Program.WriteLog("[INFO] Local database saved successfully.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to write to log: {ex.Message}");
+            Program.WriteLog($"[ERROR] Failed to save local database: {ex.Message}");
         }
     }
+}
 
-    static void EnsureScheduledTask()
+public static class VirusTotalAPI
+{
+    private const string ApiKey = "b2b90f8df9d89f4bba576642326738bec2f83fa5c2d5314838993d5cd8b3a175"; // Replace this
+
+    public static async Task<bool> CheckFileAsync(string hash, string filePath)
     {
-        string taskName = "GorstakAV";
-        string exePath = Process.GetCurrentProcess().MainModule.FileName;
-
-        var checkTask = new ProcessStartInfo
+        try
         {
-            FileName = "schtasks",
-            Arguments = $"/Query /TN \"{taskName}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Add("x-apikey", ApiKey);
 
-        using (var process = Process.Start(checkTask))
-        {
-            process.WaitForExit();
-            if (process.ExitCode == 0)
-                return;
+            var resp = await client.GetAsync($"https://www.virustotal.com/api/v3/files/{hash}");
+            if (resp.IsSuccessStatusCode)
+            {
+                var json = await resp.Content.ReadAsStringAsync();
+                if (json.Contains("malicious") || json.Contains("suspicious")) return true;
+                return false;
+            }
+            else if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                using var fs = File.OpenRead(filePath);
+                var form = new MultipartFormDataContent();
+                form.Add(new StreamContent(fs), "file", Path.GetFileName(filePath));
+                var uploadResp = await client.PostAsync("https://www.virustotal.com/api/v3/files", form);
+                return false; // uploaded, assume clean until we have data
+            }
         }
-
-        var createTask = new ProcessStartInfo
+        catch (Exception ex)
         {
-            FileName = "schtasks",
-            Arguments = $"/Create /TN \"{taskName}\" /TR \"\"{exePath}\"\" /SC ONSTART /RU SYSTEM /RL HIGHEST /F",
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        Process.Start(createTask)?.WaitForExit();
+            Program.WriteLog($"[ERROR] VirusTotal scan failed for {filePath}: {ex.Message}");
+        }
+        return false;
     }
 }

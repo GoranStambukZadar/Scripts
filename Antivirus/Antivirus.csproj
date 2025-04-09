@@ -22,6 +22,7 @@
     <EmbeddedResource Include="Autorun.ico" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="6.0.0" />
     <PackageReference Include="System.Management" Version="9.0.3" />
   </ItemGroup>
 </Project>
