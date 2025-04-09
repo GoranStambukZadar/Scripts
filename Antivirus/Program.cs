@@ -10,20 +10,37 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Management;
 using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Linq;
 
 class Program
 {
-    static string logFile = "C:\\antivirus_log.txt";
-    static string quarantineFolder = "C:\\Quarantine";
-    static string localDatabase = "C:\\local_database.txt";
+    static readonly string baseFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "GorstakAV");
+    static readonly string logFile = Path.Combine(baseFolder, "antivirus_log.txt");
+    static readonly string quarantineFolder = Path.Combine(baseFolder, "Quarantine");
+    static readonly string localDatabase = Path.Combine(baseFolder, "local_database.txt");
     static Dictionary<string, bool> scannedFiles = new();
     static DateTime lastEventTime = DateTime.MinValue;
     static int minIntervalMs = 500;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, MoveFileFlags dwFlags);
+
+    [Flags]
+    enum MoveFileFlags
+    {
+        MOVEFILE_REPLACE_EXISTING = 0x00000001,
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x00000004
+    }
 
     [STAThread]
     static void Main()
     {
         EnsureScheduledTask();
+
+        Directory.CreateDirectory(baseFolder);
+        Directory.CreateDirectory(quarantineFolder);
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -34,46 +51,58 @@ class Program
         contextMenu.Items.Add("Open Quarantine Folder", null, (s, e) => Process.Start("explorer.exe", quarantineFolder));
         contextMenu.Items.Add("Exit", null, (s, e) => Application.Exit());
 
-        Icon trayIconImage = SystemIcons.Application; // fallback
+        string? iconName = Array.Find(
+            Assembly.GetExecutingAssembly().GetManifestResourceNames(),
+            name => name.EndsWith("Autorun.ico")
+        );
 
-        try
+        if (iconName == null)
         {
-            var resourceName = "Antivirus.Autorun.ico"; // Match your namespace and filename
-            var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
-            if (stream != null)
-            {
-                trayIconImage = new Icon(stream);
-            }
-            else
-            {
-                WriteLog($"[ERROR] Embedded icon '{resourceName}' not found. Tray icon will fallback.");
-            }
+            MessageBox.Show("Tray icon resource not found.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
         }
-        catch (Exception ex)
+
+        using Stream? iconStream = Assembly.GetExecutingAssembly().GetManifestResourceStream(iconName);
+        if (iconStream == null)
         {
-            WriteLog($"[ERROR] Failed to load tray icon: {ex.Message}");
+            MessageBox.Show($"Failed to load tray icon resource '{iconName}'. Available resources: \n" + string.Join("\n", Assembly.GetExecutingAssembly().GetManifestResourceNames()), "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
         }
 
         NotifyIcon trayIcon = new NotifyIcon()
         {
-            Icon = trayIconImage,
+            Icon = new Icon(iconStream),
             Text = "Simple Antivirus by Gorstak",
             Visible = true,
             ContextMenuStrip = contextMenu
         };
 
-        Directory.CreateDirectory(quarantineFolder);
         WriteLog("Antivirus started.");
 
-        FileSystemWatcher watcher = new FileSystemWatcher("C:\\")
+        foreach (var drive in DriveInfo.GetDrives())
         {
-            Filter = "*.dll",
-            IncludeSubdirectories = true,
-            EnableRaisingEvents = true
-        };
+            if (drive.IsReady && (drive.DriveType == DriveType.Fixed || drive.DriveType == DriveType.Removable || drive.DriveType == DriveType.Network))
+            {
+                try
+                {
+                    FileSystemWatcher watcher = new FileSystemWatcher(drive.RootDirectory.FullName)
+                    {
+                        Filter = "*.dll",
+                        IncludeSubdirectories = true,
+                        EnableRaisingEvents = true
+                    };
 
-        watcher.Changed += OnChanged;
-        watcher.Created += OnChanged;
+                    watcher.Changed += OnChanged;
+                    watcher.Created += OnChanged;
+
+                    WriteLog($"Watching drive: {drive.Name}");
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Failed to watch drive {drive.Name}: {ex.Message}");
+                }
+            }
+        }
 
         Application.Run();
     }
@@ -110,6 +139,7 @@ class Program
 
         scannedFiles[hashInfo.Value.Hash] = hashInfo.Value.Valid;
         File.AppendAllText(localDatabase, $"{hashInfo.Value.Hash},{hashInfo.Value.Valid}\n");
+
         if (!hashInfo.Value.Valid)
         {
             KillProcessesUsingFile(e.FullPath);
@@ -119,23 +149,58 @@ class Program
 
     static (string Hash, bool Valid)? CalculateFileHash(string filePath)
     {
-        try
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            var signer = X509Certificate.CreateFromSignedFile(filePath);
-            bool valid = signer != null;
+            try
+            {
+                bool valid = false;
+                try
+                {
+                    var cert = X509Certificate.CreateFromSignedFile(filePath);
+                    if (cert != null)
+                    {
+                        var cert2 = new X509Certificate2(cert);
+                        var chain = new X509Chain();
+                        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                        valid = chain.Build(cert2);
 
-            using var sha256 = SHA256.Create();
-            using var stream = File.OpenRead(filePath);
-            string hash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "").ToLower();
+                        if (!valid)
+                        {
+                            WriteLog($"Certificate chain validation failed for {filePath}: {string.Join(", ", chain.ChainStatus.Select(s => s.Status))}");
+                        }
+                    }
+                    else
+                    {
+                        WriteLog($"No valid certificate found for {filePath}");
+                    }
+                }
+                catch (CryptographicException cryptoEx)
+                {
+                    WriteLog($"Cryptographic error validating signature for {filePath}: {cryptoEx.Message}");
+                    valid = false;
+                }
 
-            WriteLog($"Signature for {filePath}: {(valid ? "Valid" : "Invalid")}");
-            return (hash, valid);
+                using var sha256 = SHA256.Create();
+                using var stream = File.OpenRead(filePath);
+                string hash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "").ToLower();
+
+                WriteLog($"Signature for {filePath}: {(valid ? "Valid" : "Invalid")} (AGGRESSIVE MODE)");
+                return (hash, valid);
+            }
+            catch (IOException ioEx)
+            {
+                WriteLog($"[Attempt {attempt + 1}] IO Error reading {filePath}: {ioEx.Message}");
+                Thread.Sleep(500);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"[Attempt {attempt + 1}] Error hashing {filePath}: {ex.Message}");
+                Thread.Sleep(500);
+            }
         }
-        catch (Exception ex)
-        {
-            WriteLog($"Hashing error: {filePath} - {ex.Message}");
-            return null;
-        }
+
+        WriteLog($"Failed to hash or validate signature for {filePath} after multiple attempts.");
+        return null;
     }
 
     static void KillProcessesUsingFile(string filePath)
@@ -157,14 +222,8 @@ class Program
                                 if (parent != null)
                                 {
                                     WriteLog($"Also killing parent process {parent.ProcessName} (PID {parent.Id})");
-                                    try
-                                    {
-                                        parent.Kill();
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        WriteLog($"Failed to kill parent process: {ex.Message}");
-                                    }
+                                    parent.Kill();
+                                    parent.WaitForExit(2000);
                                 }
                             }
                             catch (Exception ex)
@@ -173,11 +232,17 @@ class Program
                             }
 
                             process.Kill();
+                            process.WaitForExit(2000);
                             break;
                         }
                     }
                 }
                 catch { }
+            }
+
+            if (File.Exists(filePath))
+            {
+                TakeFileOwnership(filePath);
             }
         }
         catch (Exception ex)
@@ -190,20 +255,32 @@ class Program
     {
         try
         {
-            int parentPid = 0;
             using (var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Process WHERE ProcessId = " + process.Id))
             {
                 foreach (var obj in searcher.Get())
                 {
-                    parentPid = Convert.ToInt32(obj["ParentProcessId"]);
-                    break;
+                    int parentPid = Convert.ToInt32(obj["ParentProcessId"]);
+                    return Process.GetProcessById(parentPid);
                 }
             }
-            return Process.GetProcessById(parentPid);
         }
-        catch
+        catch { }
+        return null;
+    }
+
+    static void TakeFileOwnership(string filePath)
+    {
+        try
         {
-            return null;
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c takeown /f \"{filePath}\" && icacls \"{filePath}\" /grant Administrators:F")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }).WaitForExit();
+        }
+        catch (Exception ex)
+        {
+            WriteLog($"Failed to take ownership of {filePath}: {ex.Message}");
         }
     }
 
@@ -212,12 +289,72 @@ class Program
         try
         {
             string dest = Path.Combine(quarantineFolder, Path.GetFileName(filePath));
-            File.Move(filePath, dest);
-            WriteLog($"Quarantined {filePath}");
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                try
+                {
+                    File.Move(filePath, dest);
+                    WriteLog($"Quarantined {filePath} to {dest}");
+                    return;
+                }
+                catch (IOException ex)
+                {
+                    WriteLog($"[Attempt {attempt + 1}] Failed to move {filePath} to quarantine: {ex.Message}");
+                    Thread.Sleep(1000);
+                    if (attempt == 2)
+                    {
+                        TakeFileOwnership(filePath);
+                        try
+                        {
+                            File.Move(filePath, dest);
+                            WriteLog($"Quarantined {filePath} to {dest} after taking ownership");
+                            return;
+                        }
+                        catch
+                        {
+                            if (ScheduleFileDeletionOnReboot(filePath))
+                            {
+                                WriteLog($"Scheduled {filePath} for deletion on reboot");
+                            }
+                            else
+                            {
+                                WriteLog($"Failed to schedule {filePath} for deletion on reboot");
+                            }
+                        }
+                    }
+                }
+            }
         }
         catch (Exception ex)
         {
-            WriteLog($"Failed to quarantine {filePath}: {ex.Message}");
+            WriteLog($"Failed to quarantine {filePath} after retries: {ex.Message}");
+            if (ScheduleFileDeletionOnReboot(filePath))
+            {
+                WriteLog($"Scheduled {filePath} for deletion on reboot as final fallback");
+            }
+            else
+            {
+                WriteLog($"Failed to schedule {filePath} for deletion on reboot as final fallback");
+            }
+        }
+    }
+
+    static bool ScheduleFileDeletionOnReboot(string filePath)
+    {
+        try
+        {
+            bool success = MoveFileEx(filePath, null, MoveFileFlags.MOVEFILE_DELAY_UNTIL_REBOOT);
+            if (!success)
+            {
+                int error = Marshal.GetLastWin32Error();
+                WriteLog($"MoveFileEx failed for {filePath} with error code {error}");
+            }
+            return success;
+        }
+        catch (Exception ex)
+        {
+            WriteLog($"Exception while scheduling {filePath} for reboot deletion: {ex.Message}");
+            return false;
         }
     }
 
@@ -226,7 +363,14 @@ class Program
         string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         string entry = $"[{timestamp}] {message}";
         Console.WriteLine(entry);
-        File.AppendAllText(logFile, entry + Environment.NewLine);
+        try
+        {
+            File.AppendAllText(logFile, entry + Environment.NewLine);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to write to log: {ex.Message}");
+        }
     }
 
     static void EnsureScheduledTask()
@@ -248,19 +392,17 @@ class Program
         {
             process.WaitForExit();
             if (process.ExitCode == 0)
-            {
-                return; // Task exists
-            }
+                return;
         }
 
         var createTask = new ProcessStartInfo
         {
             FileName = "schtasks",
             Arguments = $"/Create /TN \"{taskName}\" /TR \"\"{exePath}\"\" /SC ONSTART /RU SYSTEM /RL HIGHEST /F",
-            Verb = "runas",
-            UseShellExecute = true
+            UseShellExecute = false,
+            CreateNoWindow = true
         };
 
-        Process.Start(createTask);
+        Process.Start(createTask)?.WaitForExit();
     }
 }
