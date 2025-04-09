@@ -1,8 +1,5 @@
 @echo off
 
-:: call av
-regasm "Antivirus.dll" /codebase
-
 :: Import security policy
 lgpo /s secpol.inf
 
