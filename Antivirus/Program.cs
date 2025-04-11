@@ -30,7 +30,6 @@ class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
-        // Set up the tray icon and context menu
         ContextMenuStrip contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add("Toggle Real-Time Protection", null, (s, e) => ToggleRealtimeProtection());
         var startupItem = new ToolStripMenuItem("Run at Startup", null, (s, e) => ToggleStartup());
@@ -40,7 +39,7 @@ class Program
         contextMenu.Items.Add("View Quarantine Folder", null, (s, e) => Process.Start("explorer.exe", AntivirusEngine.quarantineFolder));
         contextMenu.Items.Add("Exit", null, (s, e) => Application.Exit());
 
-        Icon trayIconImage = SystemIcons.Application; // Default fallback icon
+        Icon trayIconImage = SystemIcons.Application;
         try
         {
             var resourceName = "Antivirus.Autorun.ico";
@@ -68,12 +67,10 @@ class Program
             ContextMenuStrip = contextMenu
         };
 
-        // Start the antivirus engine
         WriteLog("[INFO] Starting GorstakAV Antivirus Engine...");
         AntivirusEngine.Start();
         trayIcon.ShowBalloonTip(3000, "GorstakAV", "Antivirus engine started.", ToolTipIcon.Info);
 
-        // Run the application
         Application.Run();
     }
 
@@ -141,7 +138,6 @@ class Program
                 }
             }
 
-            // Update context menu checkbox
             if (trayIcon?.ContextMenuStrip?.Items[1] is ToolStripMenuItem item)
             {
                 item.Checked = IsStartupEnabled();
@@ -179,6 +175,16 @@ public class AntivirusEngine
     private static readonly byte[] dbKey = SHA256.HashData(Encoding.UTF8.GetBytes("some-super-secret-key"));
     private static List<FileSystemWatcher> watchers = new List<FileSystemWatcher>();
     private static bool realTimeProtectionEnabled = true;
+    private static readonly HashSet<string> dangerousExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".dll", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".scr", ".com"
+    };
+    private static readonly HashSet<string> excludedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        @"C:\Windows\System32\winevt\Logs\",
+        @"C:\Users\Admin\AppData\Roaming\Mozilla\Firefox\Profiles\"
+    };
+    private static readonly Dictionary<string, DateTime> lastLoggedErrors = new Dictionary<string, DateTime>();
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -242,11 +248,16 @@ public class AntivirusEngine
         if (!File.Exists(e.FullPath)) return;
 
         string ext = Path.GetExtension(e.FullPath).ToLower();
+        if (excludedPaths.Any(p => e.FullPath.StartsWith(p, StringComparison.OrdinalIgnoreCase)) && !dangerousExtensions.Contains(ext))
+        {
+            return; // Skip non-dangerous files in excluded paths
+        }
+
         if (ext == ".dll")
         {
             ScanDll(e.FullPath);
         }
-        else
+        else if (dangerousExtensions.Contains(ext))
         {
             _ = ScanWithVirusTotal(e.FullPath);
         }
@@ -257,19 +268,16 @@ public class AntivirusEngine
         var hashInfo = CalculateFileHash(path);
         if (hashInfo == null)
         {
-            Program.WriteLog($"[WARNING] Failed to calculate hash for {path}");
-            return;
+            return; // Error already logged in CalculateFileHash
         }
 
         Program.WriteLog($"[INFO] Scanning DLL: {path}, Hash: {hashInfo.Value.Hash}");
 
-        // Check if file is in System32
         string system32Path = Environment.GetFolderPath(Environment.SpecialFolder.System);
         bool isSystemDll = path.StartsWith(system32Path, StringComparison.OrdinalIgnoreCase);
 
         if (isSystemDll)
         {
-            // Verify if it's a known Microsoft-signed DLL
             try
             {
                 var cert = X509CertificateLoader.LoadCertificateFromFile(path);
@@ -320,30 +328,53 @@ public class AntivirusEngine
 
     private static (string Hash, bool Valid)? CalculateFileHash(string filePath)
     {
-        try
+        for (int i = 0; i < 3; i++)
         {
-            using var sha256 = SHA256.Create();
-            using var stream = File.OpenRead(filePath);
-            string hash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "").ToLower();
-            bool valid = false;
             try
             {
-                var cert = X509CertificateLoader.LoadCertificateFromFile(filePath);
-                if (cert != null)
+                using var sha256 = SHA256.Create();
+                using var stream = File.OpenRead(filePath);
+                string hash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "").ToLower();
+                bool valid = false;
+                try
                 {
-                    var chain = new X509Chain();
-                    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-                    valid = chain.Build(new X509Certificate2(cert));
+                    var cert = X509CertificateLoader.LoadCertificateFromFile(filePath);
+                    if (cert != null)
+                    {
+                        var chain = new X509Chain();
+                        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                        valid = chain.Build(new X509Certificate2(cert));
+                    }
                 }
+                catch { }
+                return (hash, valid);
             }
-            catch { }
-            return (hash, valid);
+            catch (IOException ex) when (ex.Message.Contains("being used by another process"))
+            {
+                if (i == 2) // Last attempt
+                {
+                    LogLockedFileError(filePath, ex.Message);
+                    return null;
+                }
+                Thread.Sleep(500); // Wait before retrying
+            }
+            catch (Exception ex)
+            {
+                Program.WriteLog($"[ERROR] Error calculating hash for {filePath}: {ex.Message}");
+                return null;
+            }
         }
-        catch (Exception ex)
+        return null; // Unreachable, but keeps compiler happy
+    }
+
+    private static void LogLockedFileError(string filePath, string message)
+    {
+        if (lastLoggedErrors.TryGetValue(filePath, out var lastLogged) && (DateTime.Now - lastLogged).TotalSeconds < 60)
         {
-            Program.WriteLog($"[ERROR] Error calculating hash for {filePath}: {ex.Message}");
-            return null;
+            return; // Suppress repetitive errors within 60 seconds
         }
+        Program.WriteLog($"[WARNING] Could not access {filePath} to calculate hash: {message}");
+        lastLoggedErrors[filePath] = DateTime.Now;
     }
 
     private static async Task ScanWithVirusTotal(string filePath)
@@ -376,7 +407,6 @@ public class AntivirusEngine
             {
                 try
                 {
-                    // Skip critical system processes
                     if (proc.ProcessName.Equals("System", StringComparison.OrdinalIgnoreCase) ||
                         proc.ProcessName.Equals("smss", StringComparison.OrdinalIgnoreCase) ||
                         proc.ProcessName.Equals("csrss", StringComparison.OrdinalIgnoreCase))
@@ -392,7 +422,6 @@ public class AntivirusEngine
                             {
                                 if (proc.ProcessName.Equals("explorer", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    // Restart explorer.exe gracefully
                                     proc.Kill();
                                     Process.Start("explorer.exe");
                                     Program.WriteLog($"[INFO] Restarted explorer.exe after closing for {filePath}");
@@ -402,7 +431,7 @@ public class AntivirusEngine
                                     proc.Kill();
                                     Program.WriteLog($"[INFO] Killed process using {filePath}: {proc.ProcessName}");
                                 }
-                                Thread.Sleep(100); // Give time for handle release
+                                Thread.Sleep(100);
                             }
                             catch (Exception ex)
                             {
@@ -430,7 +459,6 @@ public class AntivirusEngine
         {
             string dest = Path.Combine(quarantineFolder, Path.GetFileName(filePath) + $".quar_{DateTime.Now.Ticks}");
 
-            // Check if file is locked
             bool isLocked = true;
             for (int i = 0; i < 3; i++)
             {
@@ -444,7 +472,7 @@ public class AntivirusEngine
                 }
                 catch
                 {
-                    Thread.Sleep(500); // Wait and retry
+                    Thread.Sleep(500);
                 }
             }
 
@@ -455,7 +483,6 @@ public class AntivirusEngine
                 KillProcessesUsingFile(filePath);
             }
 
-            // Try moving the file
             File.Move(filePath, dest);
             Program.WriteLog($"[INFO] File moved to quarantine: {filePath} -> {dest}");
         }
@@ -485,7 +512,6 @@ public class AntivirusEngine
     {
         try
         {
-            // Take ownership
             var takeownInfo = new ProcessStartInfo
             {
                 FileName = "takeown",
@@ -503,7 +529,6 @@ public class AntivirusEngine
             takeown.WaitForExit();
             Program.WriteLog($"[INFO] Took ownership of {filePath}: {takeown.StandardOutput.ReadToEnd()}");
 
-            // Grant full control to Administrators
             var icaclsInfo = new ProcessStartInfo
             {
                 FileName = "icacls",
@@ -521,7 +546,6 @@ public class AntivirusEngine
             icacls.WaitForExit();
             Program.WriteLog($"[INFO] Granted full control to {filePath}: {icacls.StandardOutput.ReadToEnd()}");
 
-            // Reset TrustedInstaller ownership (optional, to avoid WFP issues later)
             var icaclsTrustedInfo = new ProcessStartInfo
             {
                 FileName = "icacls",
@@ -586,7 +610,7 @@ public class AntivirusEngine
 
 public static class VirusTotalAPI
 {
-    private const string ApiKey = "b2b90f8df9d89f4bba576642326738bec2f83fa5c2d5314838993d5cd8b3a175"; // Replace this
+    private const string ApiKey = "b2b90f8df9d89f4bba576642326738bec2f83fa5c2d5314838993d5cd8b3a175";
 
     public static async Task<bool> CheckFileAsync(string hash, string filePath)
     {
@@ -608,7 +632,7 @@ public static class VirusTotalAPI
                 var form = new MultipartFormDataContent();
                 form.Add(new StreamContent(fs), "file", Path.GetFileName(filePath));
                 var uploadResp = await client.PostAsync("https://www.virustotal.com/api/v3/files", form);
-                return false; // uploaded, assume clean until we have data
+                return false;
             }
         }
         catch (Exception ex)
