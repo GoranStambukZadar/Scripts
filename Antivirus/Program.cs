@@ -1,4 +1,3 @@
-// Program.cs
 using System;
 using System.IO;
 using System.Linq;
@@ -16,12 +15,14 @@ using System.Net;
 using System.Windows.Forms;
 using System.Drawing;
 using System.Reflection;
+using Microsoft.Win32;
 
 class Program
 {
     private static NotifyIcon? trayIcon;
     private static bool realTimeProtectionEnabled = true;
     private static readonly string logFile = @"C:\antivirus_log.txt";
+    private static readonly string appName = "GorstakAV";
 
     [STAThread]
     static void Main(string[] args)
@@ -32,6 +33,9 @@ class Program
         // Set up the tray icon and context menu
         ContextMenuStrip contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add("Toggle Real-Time Protection", null, (s, e) => ToggleRealtimeProtection());
+        var startupItem = new ToolStripMenuItem("Run at Startup", null, (s, e) => ToggleStartup());
+        startupItem.Checked = IsStartupEnabled();
+        contextMenu.Items.Add(startupItem);
         contextMenu.Items.Add("View Log", null, (s, e) => Process.Start("notepad.exe", logFile));
         contextMenu.Items.Add("View Quarantine Folder", null, (s, e) => Process.Start("explorer.exe", AntivirusEngine.quarantineFolder));
         contextMenu.Items.Add("Exit", null, (s, e) => Application.Exit());
@@ -39,7 +43,7 @@ class Program
         Icon trayIconImage = SystemIcons.Application; // Default fallback icon
         try
         {
-            var resourceName = "Antivirus.Autorun.ico"; // Matches your RootNamespace
+            var resourceName = "Antivirus.Autorun.ico";
             var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
             if (stream != null)
             {
@@ -83,7 +87,74 @@ class Program
         WriteLog($"[INFO] Real-time protection {status}.");
     }
 
-    public static void WriteLog(string message) // Changed to public static
+    private static bool IsStartupEnabled()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", false);
+            if (key != null)
+            {
+                string? value = key.GetValue(appName)?.ToString();
+                return !string.IsNullOrEmpty(value) && File.Exists(value.Replace("\"", ""));
+            }
+            return false;
+        }
+        catch (Exception ex)
+        {
+            WriteLog($"[ERROR] Failed to check startup registry: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static void ToggleStartup()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+            if (key == null)
+            {
+                WriteLog("[ERROR] Unable to access startup registry key.");
+                return;
+            }
+
+            bool isEnabled = IsStartupEnabled();
+            if (isEnabled)
+            {
+                key.DeleteValue(appName, false);
+                WriteLog("[INFO] Removed from startup.");
+                trayIcon?.ShowBalloonTip(1000, "GorstakAV", "Removed from startup.", ToolTipIcon.Info);
+            }
+            else
+            {
+                string? exePath = Process.GetCurrentProcess().MainModule?.FileName;
+                if (!string.IsNullOrEmpty(exePath))
+                {
+                    key.SetValue(appName, $"\"{exePath}\"");
+                    WriteLog($"[INFO] Added to startup: {exePath}");
+                    trayIcon?.ShowBalloonTip(1000, "GorstakAV", "Added to startup.", ToolTipIcon.Info);
+                }
+                else
+                {
+                    WriteLog("[ERROR] Could not determine executable path.");
+                    trayIcon?.ShowBalloonTip(1000, "GorstakAV", "Failed to add to startup: Unable to determine executable path.", ToolTipIcon.Error);
+                    return;
+                }
+            }
+
+            // Update context menu checkbox
+            if (trayIcon?.ContextMenuStrip?.Items[1] is ToolStripMenuItem item)
+            {
+                item.Checked = IsStartupEnabled();
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteLog($"[ERROR] Failed to modify startup registry: {ex.Message}");
+            trayIcon?.ShowBalloonTip(1000, "GorstakAV", "Failed to modify startup settings.", ToolTipIcon.Error);
+        }
+    }
+
+    public static void WriteLog(string message)
     {
         try
         {
@@ -192,6 +263,38 @@ public class AntivirusEngine
 
         Program.WriteLog($"[INFO] Scanning DLL: {path}, Hash: {hashInfo.Value.Hash}");
 
+        // Check if file is in System32
+        string system32Path = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        bool isSystemDll = path.StartsWith(system32Path, StringComparison.OrdinalIgnoreCase);
+
+        if (isSystemDll)
+        {
+            // Verify if it's a known Microsoft-signed DLL
+            try
+            {
+                var cert = X509CertificateLoader.LoadCertificateFromFile(path);
+                if (cert != null)
+                {
+                    var chain = new X509Chain();
+                    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                    var cert2 = new X509Certificate2(cert);
+                    bool isValid = chain.Build(cert2);
+                    string issuer = cert2.Issuer;
+                    if (isValid && issuer.Contains("Microsoft"))
+                    {
+                        Program.WriteLog($"[INFO] Skipping quarantine for Microsoft-signed System32 DLL: {path}");
+                        scannedFiles[hashInfo.Value.Hash] = (true, false);
+                        SaveDatabase();
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Program.WriteLog($"[ERROR] Error verifying certificate for {path}: {ex.Message}");
+            }
+        }
+
         if (scannedFiles.TryGetValue(hashInfo.Value.Hash, out var cached) && !cached.Valid)
         {
             KillProcessesUsingFile(path);
@@ -267,28 +370,57 @@ public class AntivirusEngine
 
     private static void KillProcessesUsingFile(string filePath)
     {
-        foreach (var proc in Process.GetProcesses())
+        try
         {
-            try
+            foreach (var proc in Process.GetProcesses())
             {
-                foreach (ProcessModule module in proc.Modules)
+                try
                 {
-                    if (string.Equals(module.FileName, filePath, StringComparison.OrdinalIgnoreCase))
+                    // Skip critical system processes
+                    if (proc.ProcessName.Equals("System", StringComparison.OrdinalIgnoreCase) ||
+                        proc.ProcessName.Equals("smss", StringComparison.OrdinalIgnoreCase) ||
+                        proc.ProcessName.Equals("csrss", StringComparison.OrdinalIgnoreCase))
                     {
-                        try
+                        continue;
+                    }
+
+                    foreach (ProcessModule module in proc.Modules)
+                    {
+                        if (string.Equals(module.FileName, filePath, StringComparison.OrdinalIgnoreCase))
                         {
-                            proc.Kill();
-                            Program.WriteLog($"[INFO] Killed process using {filePath}: {proc.ProcessName}");
+                            try
+                            {
+                                if (proc.ProcessName.Equals("explorer", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    // Restart explorer.exe gracefully
+                                    proc.Kill();
+                                    Process.Start("explorer.exe");
+                                    Program.WriteLog($"[INFO] Restarted explorer.exe after closing for {filePath}");
+                                }
+                                else
+                                {
+                                    proc.Kill();
+                                    Program.WriteLog($"[INFO] Killed process using {filePath}: {proc.ProcessName}");
+                                }
+                                Thread.Sleep(100); // Give time for handle release
+                            }
+                            catch (Exception ex)
+                            {
+                                Program.WriteLog($"[ERROR] Failed to kill process {proc.ProcessName} using {filePath}: {ex.Message}");
+                            }
+                            break;
                         }
-                        catch (Exception ex)
-                        {
-                            Program.WriteLog($"[ERROR] Failed to kill process using {filePath}: {ex.Message}");
-                        }
-                        break;
                     }
                 }
+                catch (Exception ex)
+                {
+                    Program.WriteLog($"[ERROR] Error enumerating modules for process {proc.ProcessName}: {ex.Message}");
+                }
             }
-            catch { }
+        }
+        catch (Exception ex)
+        {
+            Program.WriteLog($"[ERROR] Error in KillProcessesUsingFile for {filePath}: {ex.Message}");
         }
     }
 
@@ -296,20 +428,55 @@ public class AntivirusEngine
     {
         try
         {
-            string dest = Path.Combine(quarantineFolder, Path.GetFileName(filePath));
+            string dest = Path.Combine(quarantineFolder, Path.GetFileName(filePath) + $".quar_{DateTime.Now.Ticks}");
+
+            // Check if file is locked
+            bool isLocked = true;
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    using (File.Open(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    {
+                        isLocked = false;
+                        break;
+                    }
+                }
+                catch
+                {
+                    Thread.Sleep(500); // Wait and retry
+                }
+            }
+
+            if (isLocked)
+            {
+                Program.WriteLog($"[WARNING] File {filePath} is locked, attempting to take ownership.");
+                TakeFileOwnership(filePath);
+                KillProcessesUsingFile(filePath);
+            }
+
+            // Try moving the file
             File.Move(filePath, dest);
             Program.WriteLog($"[INFO] File moved to quarantine: {filePath} -> {dest}");
         }
-        catch
+        catch (Exception ex)
         {
-            TakeFileOwnership(filePath);
-            if (!MoveFileEx(filePath, null, MoveFileFlags.MOVEFILE_DELAY_UNTIL_REBOOT))
+            Program.WriteLog($"[ERROR] Failed to move {filePath} to quarantine: {ex.Message}");
+            try
             {
-                Program.WriteLog($"[ERROR] Failed to quarantine {filePath}, scheduled for deletion on reboot.");
+                TakeFileOwnership(filePath);
+                if (!MoveFileEx(filePath, null, MoveFileFlags.MOVEFILE_DELAY_UNTIL_REBOOT))
+                {
+                    Program.WriteLog($"[ERROR] Failed to schedule {filePath} for deletion on reboot.");
+                }
+                else
+                {
+                    Program.WriteLog($"[INFO] File {filePath} scheduled for deletion on reboot.");
+                }
             }
-            else
+            catch (Exception ex2)
             {
-                Program.WriteLog($"[INFO] File {filePath} scheduled for deletion on reboot.");
+                Program.WriteLog($"[ERROR] Failed to schedule deletion for {filePath}: {ex2.Message}");
             }
         }
     }
@@ -318,9 +485,59 @@ public class AntivirusEngine
     {
         try
         {
-            Process.Start(new ProcessStartInfo("takeown", $"/f \"{filePath}\"") { CreateNoWindow = true, UseShellExecute = false });
-            Process.Start(new ProcessStartInfo("icacls", $"\"{filePath}\" /grant Administrators:F") { CreateNoWindow = true, UseShellExecute = false });
-            Program.WriteLog($"[INFO] Took ownership of {filePath}");
+            // Take ownership
+            var takeownInfo = new ProcessStartInfo
+            {
+                FileName = "takeown",
+                Arguments = $"/f \"{filePath}\"",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true
+            };
+            var takeown = Process.Start(takeownInfo);
+            if (takeown == null)
+            {
+                Program.WriteLog($"[ERROR] Failed to start takeown process for {filePath}.");
+                return;
+            }
+            takeown.WaitForExit();
+            Program.WriteLog($"[INFO] Took ownership of {filePath}: {takeown.StandardOutput.ReadToEnd()}");
+
+            // Grant full control to Administrators
+            var icaclsInfo = new ProcessStartInfo
+            {
+                FileName = "icacls",
+                Arguments = $"\"{filePath}\" /grant Administrators:F",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true
+            };
+            var icacls = Process.Start(icaclsInfo);
+            if (icacls == null)
+            {
+                Program.WriteLog($"[ERROR] Failed to start icacls process for {filePath}.");
+                return;
+            }
+            icacls.WaitForExit();
+            Program.WriteLog($"[INFO] Granted full control to {filePath}: {icacls.StandardOutput.ReadToEnd()}");
+
+            // Reset TrustedInstaller ownership (optional, to avoid WFP issues later)
+            var icaclsTrustedInfo = new ProcessStartInfo
+            {
+                FileName = "icacls",
+                Arguments = $"\"{filePath}\" /setowner \"NT Service\\TrustedInstaller\"",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true
+            };
+            var icaclsTrusted = Process.Start(icaclsTrustedInfo);
+            if (icaclsTrusted == null)
+            {
+                Program.WriteLog($"[ERROR] Failed to start icacls process to restore TrustedInstaller for {filePath}.");
+                return;
+            }
+            icaclsTrusted.WaitForExit();
+            Program.WriteLog($"[INFO] Restored TrustedInstaller ownership for {filePath}: {icaclsTrusted.StandardOutput.ReadToEnd()}");
         }
         catch (Exception ex)
         {
