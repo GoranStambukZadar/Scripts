@@ -610,7 +610,7 @@ public class AntivirusEngine
 
 public static class VirusTotalAPI
 {
-    private const string ApiKey = "b2b90f8df9d89f4bba576642326738bec2f83fa5c2d5314838993d5cd8b3a175";
+    private const string ApiKey = "YOUR_VIRUSTOTAL_API_KEY_HERE";
 
     public static async Task<bool> CheckFileAsync(string hash, string filePath)
     {
