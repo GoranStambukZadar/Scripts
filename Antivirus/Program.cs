@@ -1,8 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Diagnostics;
-using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Management;
@@ -15,14 +15,37 @@ using System.Net;
 using System.Windows.Forms;
 using System.Drawing;
 using System.Reflection;
+using System.Text.Json;
 
 class Program
 {
     private static NotifyIcon? trayIcon;
     private static bool realTimeProtectionEnabled = true;
     private static readonly string logFile = @"C:\antivirus_log.txt";
-    private static readonly string appName = "SimpleAntivirus";
     private static readonly string ownerName = "Gorstak";
+
+    // List of critical system DLLs to exclude from scanning/quarantine
+    private static readonly HashSet<string> ExcludedDlls = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "ntdll.dll",
+        "kernel32.dll",
+        "kernelbase.dll",
+        "user32.dll",
+        "gdi32.dll",
+        "advapi32.dll",
+        "shell32.dll",
+        "shlwapi.dll",
+        "comctl32.dll",
+        "msvcrt.dll",
+        "rpcrt4.dll",
+        "sechost.dll",
+        "sspicli.dll",
+        "crypt32.dll",
+        "wintrust.dll",
+        "lsasrv.dll",
+        "samlib.dll",
+        "netapi32.dll"
+    };
 
     [STAThread]
     static void Main(string[] args)
@@ -30,13 +53,40 @@ class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        // Setup tray icon synchronously to ensure immediate visibility
+        SetupTrayIcon();
+
+        // Start antivirus engine and system scan asynchronously
+#pragma warning disable CS4014 // Suppress warning for intentional fire-and-forget task
+        Task.Run(async () =>
+        {
+            WriteLog($"[INFO] Starting Simple Antivirus by {ownerName}...");
+            try
+            {
+                await AntivirusEngine.StartAsync();
+                trayIcon?.ShowBalloonTip(3000, "Simple Antivirus", "Antivirus engine started.", ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"[ERROR] Failed to start antivirus engine: {ex.Message}");
+            }
+        });
+#pragma warning restore CS4014
+
+        Application.Run();
+    }
+
+    private static void SetupTrayIcon()
+    {
         ContextMenuStrip contextMenu = new ContextMenuStrip();
+        contextMenu.Items.Add("Scan Now", null, async (s, e) => await AntivirusEngine.StartSystemScanAsync());
         contextMenu.Items.Add("Toggle Real-Time Protection", null, (s, e) => ToggleRealtimeProtection());
         contextMenu.Items.Add("View Log", null, (s, e) => Process.Start("notepad.exe", logFile));
-        contextMenu.Items.Add("View Quarantine Folder", null, (s, e) => Process.Start("explorer.exe", AntivirusEngine.quarantineFolder));
+        contextMenu.Items.Add("Open Quarantine", null, (s, e) => Process.Start("explorer.exe", AntivirusEngine.quarantineFolder));
+        contextMenu.Items.Add("About", null, (s, e) => MessageBox.Show($"Simple Antivirus by {ownerName}", "About"));
         contextMenu.Items.Add("Exit", null, (s, e) => Application.Exit());
 
-        Icon trayIconImage = SystemIcons.Application;
+        Icon trayIconImage = SystemIcons.Shield;
         try
         {
             var resourceName = "Antivirus.Autorun.ico";
@@ -48,7 +98,7 @@ class Program
             }
             else
             {
-                WriteLog($"[WARNING] Embedded icon '{resourceName}' not found. Using default icon.");
+                WriteLog($"[WARNING] Embedded icon '{resourceName}' not found. Using default shield icon.");
             }
         }
         catch (Exception ex)
@@ -64,11 +114,7 @@ class Program
             ContextMenuStrip = contextMenu
         };
 
-        WriteLog($"[INFO] Starting Simple Antivirus by {ownerName}...");
-        AntivirusEngine.Start();
-        trayIcon.ShowBalloonTip(3000, "Simple Antivirus", "Antivirus engine started.", ToolTipIcon.Info);
-
-        Application.Run();
+        WriteLog("[INFO] Tray icon setup completed.");
     }
 
     private static void ToggleRealtimeProtection()
@@ -93,6 +139,8 @@ class Program
             Console.WriteLine($"[ERROR] Failed to write to log: {ex.Message}");
         }
     }
+
+    public static bool IsExcludedDll(string fileName) => ExcludedDlls.Contains(fileName);
 }
 
 public class AntivirusEngine
@@ -127,15 +175,31 @@ public class AntivirusEngine
         MOVEFILE_DELAY_UNTIL_REBOOT = 0x00000004
     }
 
-    public static void Start()
+#pragma warning disable CS1998 // Suppress warning for async method without await
+    public static async Task StartAsync()
     {
         Directory.CreateDirectory(baseFolder);
         Directory.CreateDirectory(quarantineFolder);
         LoadDatabase();
-        ScanAllFiles();
         SetupFileWatchers();
-        Task.Run(() => ProcessVtQueue()); // Start queue processor
+
+        // Show engine started notification immediately
+        Program.WriteLog("[INFO] Antivirus engine initialized.");
+
+        // Start system scan in the background
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ScanAllFilesAsync();
+            }
+            catch (Exception ex)
+            {
+                Program.WriteLog($"[ERROR] Background system scan failed: {ex.Message}");
+            }
+        });
     }
+#pragma warning restore CS1998
 
     public static void SetRealTimeProtection(bool enabled)
     {
@@ -148,6 +212,7 @@ public class AntivirusEngine
 
     private static void SetupFileWatchers()
     {
+        var startTime = DateTime.Now;
         foreach (var drive in DriveInfo.GetDrives())
         {
             if (!drive.IsReady) continue;
@@ -157,24 +222,33 @@ public class AntivirusEngine
                 {
                     Filter = "*.*",
                     IncludeSubdirectories = true,
-                    EnableRaisingEvents = true
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                    EnableRaisingEvents = realTimeProtectionEnabled
                 };
 
                 watcher.Created += OnFileEvent;
                 watcher.Changed += OnFileEvent;
                 watchers.Add(watcher);
+                Program.WriteLog($"[INFO] File watcher set up for {drive.Name}");
             }
             catch (Exception ex)
             {
                 Program.WriteLog($"[ERROR] Failed to set up watcher for {drive.Name}: {ex.Message}");
             }
         }
+        var duration = (DateTime.Now - startTime).TotalSeconds;
+        Program.WriteLog($"[INFO] File watchers setup completed in {duration:F2} seconds.");
     }
 
-    private static void ScanAllFiles()
+    public static async Task StartSystemScanAsync()
     {
-        Program.WriteLog("[INFO] Scanning all files across the system...");
-        
+        await ScanAllFilesAsync();
+    }
+
+    private static async Task ScanAllFilesAsync()
+    {
+        Program.WriteLog("[INFO] Starting system-wide file scan...");
+
         var nonVtEntries = scannedFiles.Keys.Where(k => !scannedFiles[k].FromVT).ToList();
         foreach (var key in nonVtEntries)
         {
@@ -186,17 +260,27 @@ public class AntivirusEngine
             if (!drive.IsReady) continue;
             try
             {
-                foreach (var file in Directory.EnumerateFiles(drive.RootDirectory.FullName, "*.*", SearchOption.AllDirectories))
+                await Task.Run(() =>
                 {
-                    if (Path.GetExtension(file).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                    foreach (var file in Directory.EnumerateFiles(drive.RootDirectory.FullName, "*.*", SearchOption.AllDirectories))
                     {
-                        ScanDll(file);
+                        string fileName = Path.GetFileName(file);
+                        if (Program.IsExcludedDll(fileName))
+                        {
+                            Program.WriteLog($"[INFO] Skipping critical system file: {file}");
+                            continue;
+                        }
+
+                        if (Path.GetExtension(file).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ScanDll(file);
+                        }
+                        else
+                        {
+                            EnqueueVtScan(file);
+                        }
                     }
-                    else
-                    {
-                        EnqueueVtScan(file);
-                    }
-                }
+                });
             }
             catch (Exception ex)
             {
@@ -214,6 +298,18 @@ public class AntivirusEngine
 
         if (!File.Exists(e.FullPath)) return;
 
+        string fileName = Path.GetFileName(e.FullPath);
+        if (Program.IsExcludedDll(fileName))
+        {
+            Program.WriteLog($"[INFO] Skipping critical system file: {e.FullPath}");
+            return;
+        }
+
+        if (e.FullPath.StartsWith(quarantineFolder, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         string ext = Path.GetExtension(e.FullPath).ToLower();
         if (ext == ".dll")
         {
@@ -227,6 +323,13 @@ public class AntivirusEngine
 
     private static void ScanDll(string path)
     {
+        string fileName = Path.GetFileName(path);
+        if (Program.IsExcludedDll(fileName))
+        {
+            Program.WriteLog($"[INFO] Skipping critical system file: {path}");
+            return;
+        }
+
         var hashInfo = CalculateFileHash(path);
         if (hashInfo == null)
         {
@@ -243,46 +346,8 @@ public class AntivirusEngine
 
         Program.WriteLog($"[INFO] Scanning DLL: {path}, Hash: {hashInfo.Value.Hash}");
 
-        string system32Path = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        bool isSystemDll = path.StartsWith(system32Path, StringComparison.OrdinalIgnoreCase);
-
-        bool isMicrosoftSigned = false;
-        if (isSystemDll)
-        {
-            try
-            {
-                var cert = X509CertificateLoader.LoadCertificateFromFile(path);
-                if (cert != null)
-                {
-                    var chain = new X509Chain();
-                    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-                    var cert2 = new X509Certificate2(cert);
-                    bool isValid = chain.Build(cert2);
-                    string issuer = cert2.Issuer;
-                    if (isValid && issuer.Contains("Microsoft"))
-                    {
-                        isMicrosoftSigned = true;
-                        Program.WriteLog($"[INFO] Skipping quarantine for Microsoft-signed System32 DLL: {path}");
-                        scannedFiles[hashInfo.Value.Hash] = (true, false);
-                        SaveDatabase();
-                    }
-                    else
-                    {
-                        Program.WriteLog($"[INFO] Non-Microsoft certificate found for System32 DLL: {path}");
-                    }
-                }
-                else
-                {
-                    Program.WriteLog($"[INFO] No certificate found for System32 DLL: {path}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Program.WriteLog($"[ERROR] Error verifying certificate for {path}: {ex.Message}");
-            }
-        }
-
-        if (!hashInfo.Value.Valid && !isMicrosoftSigned)
+        bool isSigned = hashInfo.Value.Valid;
+        if (!isSigned)
         {
             scannedFiles[hashInfo.Value.Hash] = (false, false);
             KillProcessesUsingFile(path);
@@ -290,7 +355,7 @@ public class AntivirusEngine
             SaveDatabase();
             Program.WriteLog($"[ALERT] Unsigned DLL detected and quarantined: {path}");
         }
-        else if (!isMicrosoftSigned)
+        else
         {
             EnqueueVtScan(path);
             scannedFiles[hashInfo.Value.Hash] = (true, false);
@@ -303,10 +368,15 @@ public class AntivirusEngine
     {
         lock (vtQueue)
         {
-            if (!scannedFiles.ContainsKey(CalculateFileHash(filePath)?.Hash ?? ""))
+            var hashInfo = CalculateFileHash(filePath);
+            if (hashInfo != null && !scannedFiles.ContainsKey(hashInfo.Value.Hash))
             {
                 vtQueue.Enqueue((filePath, DateTime.Now));
                 Program.WriteLog($"[INFO] Queued for VirusTotal scan: {filePath}");
+            }
+            else if (hashInfo == null)
+            {
+                Program.WriteLog($"[WARNING] Skipped VirusTotal scan for {filePath} due to hash calculation failure.");
             }
         }
     }
@@ -315,7 +385,6 @@ public class AntivirusEngine
     {
         while (true)
         {
-            // Reset counters if needed
             if ((DateTime.Now - lastMinuteReset).TotalMinutes >= 1)
             {
                 queriesPerMinute = 0;
@@ -332,13 +401,13 @@ public class AntivirusEngine
             {
                 if (vtQueue.Count == 0 || queriesPerMinute >= maxQueriesPerMinute || queriesPerDay >= maxQueriesPerDay)
                 {
-                    Thread.Sleep(1000); // Wait if queue empty or limits reached
+                    Thread.Sleep(1000);
                     continue;
                 }
                 item = vtQueue.Dequeue();
             }
 
-            if ((DateTime.Now - item.Added).TotalDays > 7) // Skip files queued over a week ago
+            if ((DateTime.Now - item.Added).TotalDays > 7)
             {
                 Program.WriteLog($"[INFO] Skipped expired queued scan: {item.Path}");
                 continue;
@@ -348,7 +417,6 @@ public class AntivirusEngine
             queriesPerDay++;
             await ScanWithVirusTotal(item.Path);
 
-            // Wait to maintain 4/minute pace (15 seconds between queries)
             Thread.Sleep(15000);
         }
     }
@@ -363,17 +431,21 @@ public class AntivirusEngine
                 using var stream = File.OpenRead(filePath);
                 string hash = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "").ToLower();
                 bool valid = false;
+#pragma warning disable SYSLIB0057 // Suppress obsolete warning for CreateFromSignedFile
                 try
                 {
-                    var cert = X509CertificateLoader.LoadCertificateFromFile(filePath);
-                    if (cert != null)
-                    {
-                        var chain = new X509Chain();
-                        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-                        valid = chain.Build(new X509Certificate2(cert));
-                    }
+                    var cert = X509Certificate.CreateFromSignedFile(filePath);
+                    using var cert2 = new X509Certificate2(cert);
+                    var chain = new X509Chain();
+                    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                    valid = chain.Build(cert2);
                 }
-                catch { }
+#pragma warning restore SYSLIB0057
+                catch (CryptographicException) { } // File is not signed
+                catch (IOException ex)
+                {
+                    Program.WriteLog($"[WARNING] IO error accessing {filePath}: {ex.Message}");
+                }
                 return (hash, valid);
             }
             catch (IOException ex) when (ex.Message.Contains("being used by another process"))
@@ -409,33 +481,47 @@ public class AntivirusEngine
         var hashInfo = CalculateFileHash(filePath);
         if (hashInfo == null)
         {
-            Program.WriteLog($"[WARNING] Initial hash calculation failed for {filePath}, attempting to unlock for VT scan...");
+            Program.WriteLog($"[WARNING] Initial hash calculation failed for {filePath}, attempting to unlock...");
             TakeFileOwnership(filePath);
             KillProcessesUsingFile(filePath);
             hashInfo = CalculateFileHash(filePath);
             if (hashInfo == null)
             {
-                Program.WriteLog($"[ERROR] Failed to calculate hash for {filePath} after unlock attempt, skipping VT scan.");
+                Program.WriteLog($"[ERROR] Failed to calculate hash for {filePath} after unlock attempt. Skipping quarantine.");
                 return;
             }
         }
 
-        if (scannedFiles.ContainsKey(hashInfo.Value.Hash)) return;
+        if (scannedFiles.ContainsKey(hashInfo.Value.Hash))
+        {
+            Program.WriteLog($"[INFO] Skipping VirusTotal scan for {filePath}: already scanned.");
+            return;
+        }
 
         Program.WriteLog($"[INFO] Scanning with VirusTotal: {filePath}, Hash: {hashInfo.Value.Hash}");
-        bool flagged = await VirusTotalAPI.CheckFileAsync(hashInfo.Value.Hash, filePath);
+        bool flagged;
+        try
+        {
+            flagged = await VirusTotalAPI.CheckFileAsync(hashInfo.Value.Hash, filePath);
+        }
+        catch (Exception ex)
+        {
+            Program.WriteLog($"[ERROR] VirusTotal scan failed for {filePath}: {ex.Message}. Treating as safe.");
+            flagged = false;
+        }
+
         scannedFiles[hashInfo.Value.Hash] = (!flagged, true);
         SaveDatabase();
 
         if (flagged)
         {
+            Program.WriteLog($"[ALERT] File flagged by VirusTotal: {filePath}. Moving to quarantine.");
             KillProcessesUsingFile(filePath);
             QuarantineFile(filePath);
-            Program.WriteLog($"[ALERT] File flagged by VirusTotal and quarantined: {filePath}");
         }
         else
         {
-            Program.WriteLog($"[INFO] File cleared by VirusTotal: {filePath}");
+            Program.WriteLog($"[INFO] File cleared by VirusTotal: {filePath}. No action taken.");
         }
     }
 
@@ -497,7 +583,8 @@ public class AntivirusEngine
     {
         try
         {
-            string dest = Path.Combine(quarantineFolder, Path.GetFileName(filePath) + $".quar_{DateTime.Now.Ticks}");
+            string fileName = Path.GetFileName(filePath);
+            string dest = Path.Combine(quarantineFolder, $"{fileName}.quar_{DateTime.Now.Ticks}");
 
             bool isLocked = true;
             for (int i = 0; i < 3; i++)
@@ -659,26 +746,52 @@ public static class VirusTotalAPI
             using var client = new HttpClient();
             client.DefaultRequestHeaders.Add("x-apikey", ApiKey);
 
+            Program.WriteLog($"[DEBUG] Sending VirusTotal request for {filePath}, hash: {hash}");
             var resp = await client.GetAsync($"https://www.virustotal.com/api/v3/files/{hash}");
+            Program.WriteLog($"[DEBUG] VirusTotal response status for {filePath}: {resp.StatusCode}");
+
             if (resp.IsSuccessStatusCode)
             {
                 var json = await resp.Content.ReadAsStringAsync();
-                if (json.Contains("malicious") || json.Contains("suspicious")) return true;
-                return false;
+                Program.WriteLog($"[DEBUG] VirusTotal response for {filePath}: {(json.Length > 100 ? json.Substring(0, 100) + "..." : json)}");
+
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("data", out var data) &&
+                    data.TryGetProperty("attributes", out var attributes) &&
+                    attributes.TryGetProperty("last_analysis_stats", out var stats))
+                {
+                    int malicious = stats.GetProperty("malicious").GetInt32();
+                    int suspicious = stats.GetProperty("suspicious").GetInt32();
+                    Program.WriteLog($"[DEBUG] VirusTotal stats for {filePath}: malicious={malicious}, suspicious={suspicious}");
+                    return malicious > 0 || suspicious > 0;
+                }
+                else
+                {
+                    Program.WriteLog($"[WARNING] Invalid VirusTotal response format for {filePath}. Treating as safe.");
+                    return false;
+                }
             }
-            else if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            else if (resp.StatusCode == HttpStatusCode.NotFound)
             {
+                Program.WriteLog($"[INFO] Hash not found in VirusTotal for {filePath}. Uploading file.");
                 using var fs = File.OpenRead(filePath);
                 var form = new MultipartFormDataContent();
                 form.Add(new StreamContent(fs), "file", Path.GetFileName(filePath));
                 var uploadResp = await client.PostAsync("https://www.virustotal.com/api/v3/files", form);
+                Program.WriteLog($"[DEBUG] VirusTotal upload response for {filePath}: {uploadResp.StatusCode}");
+                return false; // New uploads need analysis time, treat as safe for now
+            }
+            else
+            {
+                Program.WriteLog($"[WARNING] VirusTotal request failed for {filePath}: Status {resp.StatusCode}. Treating as safe.");
                 return false;
             }
         }
         catch (Exception ex)
         {
-            Program.WriteLog($"[ERROR] VirusTotal scan failed for {filePath}: {ex.Message}");
+            Program.WriteLog($"[ERROR] VirusTotal scan failed for {filePath}: {ex.Message}. Treating as safe.");
+            return false;
         }
-        return false;
     }
 }
