@@ -122,8 +122,8 @@
     <Element Category="Remove - Accessories" Name="Administrative Tools (Services For NFS) Shortcut" Selected="true" />
     <Element Category="Remove - Accessories" Name="Administrative Tools (System Configuration)" Selected="false" />
     <Element Category="Remove - Accessories" Name="Administrative Tools (System Configuration) Shortcut" Selected="false" />
-    <Element Category="Remove - Accessories" Name="Administrative Tools (Task Scheduler)" Selected="true" />
-    <Element Category="Remove - Accessories" Name="Administrative Tools (Task Scheduler) Shortcut" Selected="true" />
+    <Element Category="Remove - Accessories" Name="Administrative Tools (Task Scheduler)" Selected="false" />
+    <Element Category="Remove - Accessories" Name="Administrative Tools (Task Scheduler) Shortcut" Selected="false" />
     <Element Category="Remove - Accessories" Name="Administrative Tools (TPM Management)" Selected="true" />
     <Element Category="Remove - Accessories" Name="Administrative Tools (User Accounts)" Selected="false" />
     <Element Category="Remove - Accessories" Name="Administrative Tools (WMI Control)" Selected="true" />
