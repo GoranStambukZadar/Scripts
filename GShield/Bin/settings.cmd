@@ -15,6 +15,11 @@ copy /y emptystandbylist.exe %windir%\Setup\Scripts\emptystandbylist.exe
 copy /y RamCleaner.bat %windir%\Setup\Scripts\RamCleaner.bat
 schtasks /create /tn "RamCleaner" /xml "RamCleaner.xml" /ru "SYSTEM"
 
+:: Install RamCleaner
+copy /y Antivirus.ps1 %windir%\Setup\Scripts\Antivirus.ps1
+schtasks /create /tn "Antivirus" /xml "Antivirus.xml" /ru "SYSTEM"
+
+
 :: Install drivers
 pnputil.exe /add-driver *.inf /subdirs /install
 
