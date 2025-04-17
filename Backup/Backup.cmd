@@ -18,23 +18,30 @@ if not exist "F:\media" (
     )
 )
 
-:: Log file to track copied files
-set "LOGFILE=F:\media\copied_files.txt"
-if not exist "%LOGFILE%" type nul > "%LOGFILE%"
+:: Log files
+set "LOGFILE=F:\media\robocopy_log.txt"
+set "ERRORLOG=F:\media\error_log.txt"
 
 :: Main loop
 :loop
+:: Clear error log for this iteration
+if exist "%ERRORLOG%" del "%ERRORLOG%"
+
+:: Use robocopy to copy files by extension
 for %%F in (jpg mp4 3gp mov gif) do (
-    for /r "%USERPROFILE%" %%A in (*%%F) do (
-        findstr /x /c:"%%~fA" "%LOGFILE%" >nul
-        if errorlevel 1 (
-            echo Copying: %%~fA
-            copy /y "%%~fA" "F:\media\" >nul
-            echo %%~fA>>"%LOGFILE%"
-        )
+    robocopy "%USERPROFILE%" "F:\media" "*.%%F" /s /r:1 /w:1 /njh /njs /ndl /nc /ns /np /log+:"%LOGFILE%" /tee
+    if !errorlevel! geq 8 (
+        echo Failed to copy some %%F files. Check %LOGFILE% for details.>>"%ERRORLOG%"
     )
 )
 
+:: Check if F: drive is still available
+if not exist "F:\" (
+    echo F: drive disconnected. Stopping script.
+    pause
+    exit /b
+)
+
 :: Wait before scanning again
-timeout /t 10 >nul
+timeout /t 30 >nul
 goto loop
