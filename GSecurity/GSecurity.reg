@@ -11,3 +11,27 @@ Windows Registry Editor Version 5.00
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\safer\CodeIdentifiers]
 "AuthenticodeEnabled"=dword:00040000
+"DefaultLevel"=dword:00040000
+"TransparentEnabled"=dword:00000002
+"PolicyScope"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Disallowed]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Disallowed\Certificates]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Disallowed\Certificates\0119E81BE9A14CD8E22F40AC118C687ECBA3F4D8]
+@=""
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Disallowed\Certificates\06F1AA330B927B753A40E68CDF22E34BCBEF3352]
+@=""
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Disallowed\Certificates\283E7BAC40155491089F1F41087FC81E09D2E602]
+@=""
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Disallowed\Certificates\31F9FC8BA3805986B721EA7295C65B3A44534274]
+@=""
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Disallowed\Certificates\F8DB7E1C16F1FFD4AAAD4AAD8DFF0F2445184AEB]
+@=""
