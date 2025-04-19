@@ -2,8 +2,8 @@
 <!--File generated with a WinReducer Software created by Winterstorm2050 from www.winreducer.net-->
 <Packages>
   <WinReducerEX>110</WinReducerEX>
-  <Version>v3.9.5.0</Version>
-  <Date>uto 01 tra 2025 1:13:26</Date>
+  <Version>v3.9.7.0</Version>
+  <Date>Thu 17 Apr 2025 11:11:16 AM</Date>
   <Components>
     <Element Category="Appearance" Name="Activate Desktop Context Menu" Selected="false" Value="" />
     <Element Category="Appearance" Name="Safe Mode" Selected="false" Value="" />
@@ -72,7 +72,7 @@
     <Element Category="Features" Name="Trivial File Transfer Protocol (TFTP)" Selected="true" Value="3" />
     <Element Category="Features" Name="Windows Defender Application Guard" Selected="true" Value="3" />
     <Element Category="Features" Name="Windows Identity Foundation 3.5" Selected="false" Value="" />
-    <Element Category="Features" Name="Windows Media Player" Selected="true" Value="3" />
+    <Element Category="Features" Name="Windows Media Player" Selected="false" Value="" />
     <Element Category="Features" Name="Windows PowerShell" Selected="false" Value="" />
     <Element Category="Features" Name="Windows Sandbox" Selected="true" Value="3" />
     <Element Category="Features" Name="Windows Search" Selected="false" Value="" />
@@ -177,7 +177,7 @@
     <Element Category="Remove - Accessories" Name="Help (Engine)" Selected="true" />
     <Element Category="Remove - Accessories" Name="Help (HTML)" Selected="true" />
     <Element Category="Remove - Accessories" Name="Imapi" Selected="false" />
-    <Element Category="Remove - Accessories" Name="Input Method Editor" Selected="true" />
+    <Element Category="Remove - Accessories" Name="Input Method Editor" Selected="false" />
     <Element Category="Remove - Accessories" Name="Machine Learning" Selected="true" />
     <Element Category="Remove - Accessories" Name="Natural Languages" Selected="true" />
     <Element Category="Remove - Accessories" Name="Night Light" Selected="false" />
@@ -652,7 +652,7 @@
     <Element Category="Remove - Languages" Name="Canada" Selected="true" Value="fr-CA" />
     <Element Category="Remove - Languages" Name="China (HK)" Selected="true" Value="zh-HK" />
     <Element Category="Remove - Languages" Name="China (S)" Selected="true" Value="zh-CN" />
-    <Element Category="Remove - Languages" Name="China (T)" Selected="true" Value="zh-TW" />
+    <Element Category="Remove - Languages" Name="China (T)" Selected="false" Value="zh-TW" />
     <Element Category="Remove - Languages" Name="Croatia" Selected="true" Value="hr-HR" />
     <Element Category="Remove - Languages" Name="Czech Republic" Selected="true" Value="cs-CZ" />
     <Element Category="Remove - Languages" Name="Denmark" Selected="true" Value="da-DK" />
@@ -664,8 +664,8 @@
     <Element Category="Remove - Languages" Name="Hungary" Selected="true" Value="hu-HU" />
     <Element Category="Remove - Languages" Name="Israel" Selected="true" Value="he-IL" />
     <Element Category="Remove - Languages" Name="Italy" Selected="true" Value="it-IT" />
-    <Element Category="Remove - Languages" Name="Japan" Selected="true" Value="ja-JP" />
-    <Element Category="Remove - Languages" Name="Korea" Selected="true" Value="ko-KR" />
+    <Element Category="Remove - Languages" Name="Japan" Selected="false" Value="ja-JP" />
+    <Element Category="Remove - Languages" Name="Korea" Selected="false" Value="ko-KR" />
     <Element Category="Remove - Languages" Name="Latvia" Selected="true" Value="lv-LV" />
     <Element Category="Remove - Languages" Name="Lithuania" Selected="true" Value="lt-LT" />
     <Element Category="Remove - Languages" Name="Mexico" Selected="true" Value="es-MX" />
@@ -1196,6 +1196,7 @@
     <Element Category="Tweaks" Name="Classic GUI - Enable Classic Windows Update UI" Selected="false" />
     <Element Category="Tweaks" Name="Classic GUI - Enable Windows Photo Viewer" Selected="true" />
     <Element Category="Tweaks" Name="Command Prompt - Set Window transparency to 80%" Selected="true" />
+    <Element Category="Tweaks" Name="Context Menu - Add Boot to UEFI firmware" Selected="false" />
     <Element Category="Tweaks" Name="Context Menu - Add Copy To another folder" Selected="false" />
     <Element Category="Tweaks" Name="Context Menu - Add Move To another folder" Selected="false" />
     <Element Category="Tweaks" Name="Context Menu - Add Register Dll or Ocx files" Selected="false" />
@@ -1604,7 +1605,7 @@
     <Element Category="Services" Name="Wired AutoConfig Service" Selected="true" Value="3" />
     <Element Category="Services" Name="Workstation Service" Selected="true" Value="3" />
     <Element Category="Services" Name="WLAN AutoConfig Service" Selected="true" Value="3" />
-    <Element Category="Services" Name="Work Folders Service" Selected="false" Value="3" />
+    <Element Category="Services" Name="Work Folders Service" Selected="false" Value="" />
     <Element Category="Services" Name="WWAN AutoConfig Service" Selected="true" Value="3" />
     <Element Category="Services" Name="WWAN (Local Profile Assistant) Service" Selected="true" Value="3" />
     <Element Category="Services" Name="Xbox Accessory Management Service" Selected="true" Value="3" />
