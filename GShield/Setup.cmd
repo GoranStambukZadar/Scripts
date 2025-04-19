@@ -25,7 +25,3 @@ for /f "tokens=*" %%C in ('dir /b /o:n *.cmd') do (
     call "%%C"
 )
 
-:: Step 6: Execute EXE (.cmd) files alphabetically
-for /f "tokens=*" %%E in ('dir /b /o:n *.exe') do (
-    Start "" "%%E"
-)
