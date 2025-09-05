@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zerch</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        header {
+            background-color: #0056b3;
+            color: white;
+            padding: 1rem;
+            text-align: center;
+        }
+        form {
+            text-align: center;
+            margin: 2rem 0;
+        }
+        input[type="text"] {
+            padding: 0.5rem;
+            font-size: 1rem;
+            width: 50%;
+            margin-right: 0.5rem;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            padding: 0.5rem 1rem;
+            background-color: #0056b3;
+            color: white;
+            font-size: 1rem;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #results {
+            padding: 2rem;
+            text-align: left;
+        }
+        .result-item {
+            border-bottom: 1px solid #ddd;
+            padding: 1rem 0;
+            font-size: 1.1rem;
+        }
+        .result-item h3 {
+            margin: 0;
+            font-size: 1.25rem;
+        }
+        .result-item a {
+            color: #0056b3;
+            text-decoration: none;
+        }
+        .result-item a:hover {
+            text-decoration: underline;
+        }
+        .result-item p {
+            margin: 0.5rem 0;
+        }
+        .result-item small {
+            font-size: 0.9rem;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Zerch</h1>
+    </header>
+
+    <form id="search-form">
+        <input type="text" id="search-query" placeholder="Search the web..." onkeydown="checkEnter(event)">
+        <button type="submit">Search</button>
+    </form>
+
+    <div id="results"></div>
+
+    <script>
+        // Prevent Enter key from submitting form
+        function checkEnter(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault(); // Prevent form submission on Enter
+                console.log('Enter key pressed. Triggering form submission.');
+                document.getElementById('search-form').requestSubmit(); // Manually submit form
+            }
+        }
+
+        // Form submission handler
+        document.getElementById('search-form').addEventListener('submit', function(event) {
+            event.preventDefault();  // Prevent form from submitting and refreshing the page
+            console.log('Form submitted.');
+
+            const query = document.getElementById('search-query').value;
+            console.log('Search query:', query);
+
+            if (!query) {
+                alert("Please enter a search query!");
+                return;
+            }
+
+            // Fetch DuckDuckGo search results
+            const duckDuckGoUrl = `https://api.duckduckgo.com/?q=${query}&format=json`;
+
+            console.log('Making DuckDuckGo API call...');
+            
+            fetch(duckDuckGoUrl)
+                .then(response => response.json())
+                .then(data => {
+                    console.log('DuckDuckGo response data:', data);
+                    let combinedResults = [];
+
+                    // Process DuckDuckGo results
+                    const duckResults = data.RelatedTopics || [];
+                    duckResults.forEach(item => {
+                        if (item.Result) {
+                            combinedResults.push({
+                                title: item.Text,
+                                url: item.FirstURL,
+                                snippet: item.Text,
+                                engine: 'DuckDuckGo',
+                                date: null
+                            });
+                        }
+                    });
+
+                    // Provide a link to Yahoo search results
+                    const yahooSearchUrl = `https://search.yahoo.com/search?p=${query}`;
+
+                    // Display the results
+                    displayResults(combinedResults, yahooSearchUrl);
+                })
+                .catch(error => {
+                    console.error('Error fetching DuckDuckGo data:', error);
+                });
+        });
+
+        function displayResults(results, yahooUrl) {
+            const resultsContainer = document.getElementById('results');
+            resultsContainer.innerHTML = ''; // Clear previous results
+
+            // Check if we have no results to display
+            if (results.length === 0) {
+                resultsContainer.innerHTML = '<p>No results found. Please try again with different keywords.</p>';
+            } else {
+                results.forEach(result => {
+                    const resultElement = document.createElement('div');
+                    resultElement.classList.add('result-item');
+                    resultElement.innerHTML = `
+                        <h3><a href="${result.url}" target="_blank">${result.title}</a></h3>
+                        <p>${result.snippet}</p>
+                        <small>Source: ${result.engine}</small>
+                    `;
+                    resultsContainer.appendChild(resultElement);
+                });
+            }
+
+            // Add a link to Yahoo search results
+            const yahooLink = document.createElement('div');
+            yahooLink.innerHTML = `
+                <p>See more results on <a href="${yahooUrl}" target="_blank">Yahoo</a></p>
+            `;
+            resultsContainer.appendChild(yahooLink);
+        }
+    </script>
+</body>
+</html>
