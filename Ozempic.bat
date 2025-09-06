@@ -41,10 +41,15 @@ if %errorlevel% equ 0 (
     echo ResetBase failed. Check C:\Windows\Logs\DISM\dism.log for details.
 )
 
+echo Doing disk cleanup
+cleanmgr /sagerun:65535
+cleanmgr /verylowdisk
+
 echo Restarting Windows Update and BITS services...
 net start wuauserv
 net start bits
 
 echo Cleanup complete. Press any key to exit.
 pause
+
 exit /b 0
